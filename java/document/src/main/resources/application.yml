@@ -1,0 +1,38 @@
+spring:
+  main:
+    allow-bean-definition-overriding: true
+  application:
+    name: qa-document
+  datasource:
+    url: jdbc:mysql://localhost:3306/qa_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true
+    username: root
+    password: hwx1314520
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+server:
+  port: 8080
+
+app:
+  jwt:
+    secret: qa-agent-jwt-secret-key-2026-mvp-minlength-256bit
+    expiration: 86400000
+  agent:
+    api-key: qa-agent-internal-api-key-2026
+    base-url: http://localhost:8000
+
+minio:
+  endpoint: http://localhost:9000
+  access-key: admin
+  secret-key: admin123456
+  bucket: qa-documents
