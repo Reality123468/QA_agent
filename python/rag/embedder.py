@@ -56,11 +56,14 @@ def get_embedder():
     try:
         from langchain_openai import OpenAIEmbeddings
 
-        _embedder = OpenAIEmbeddings(
+        test_embedder = OpenAIEmbeddings(
             model="deepseek-chat",
             api_key=DEEPSEEK_API_KEY,
             base_url=DEEPSEEK_API_URL,
         )
+        # Test the embedder with a real API call to verify it works
+        test_embedder.embed_query("test")
+        _embedder = test_embedder
         _provider = "deepseek"
         logger.info("Embedder initialized: DeepSeek API via OpenAIEmbeddings (model=deepseek-chat)")
         return _embedder
@@ -89,16 +92,36 @@ def get_embedder():
     return _embedder
 
 
+def _fallback_to_sklearn():
+    """Force embedder to fall back to sklearn HashingVectorizer."""
+    global _embedder, _provider
+    _embedder = SklearnHashEmbedder(n_features=384)
+    _provider = "sklearn"
+    logger.info("Embedder fallen back to: sklearn HashingVectorizer (n_features=384)")
+
+
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """将文本列表转换为向量"""
+    """将文本列表转换为向量（含自动回退）"""
     embedder = get_embedder()
-    return embedder.embed_documents(texts)
+    try:
+        return embedder.embed_documents(texts)
+    except Exception as e:
+        logger.warning(f"Embedder.embed_documents() failed ({e}), falling back to sklearn")
+        _fallback_to_sklearn()
+        embedder = get_embedder()
+        return embedder.embed_documents(texts)
 
 
 def embed_query(query: str) -> List[float]:
-    """将查询文本转换为向量"""
+    """将查询文本转换为向量（含自动回退）"""
     embedder = get_embedder()
-    return embedder.embed_query(query)
+    try:
+        return embedder.embed_query(query)
+    except Exception as e:
+        logger.warning(f"Embedder.embed_query() failed ({e}), falling back to sklearn")
+        _fallback_to_sklearn()
+        embedder = get_embedder()
+        return embedder.embed_query(query)
 
 
 def get_vector_size() -> int:

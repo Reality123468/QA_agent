@@ -1,12 +1,12 @@
 import json
 import logging
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from api.dependencies import verify_api_key
 from api.schemas.chat import ChatRequest
 from api.schemas.index import IndexRequest
 from rag.indexer import index_document
-from rag.retriever import hybrid_search
+from llm.rag_chain import answer_with_rag
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,28 +24,29 @@ async def index_document_route(request: IndexRequest, api_key: str = Depends(ver
 
 
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest, api_key: str = Depends(verify_api_key)):
-    """SSE 流式对话（检索部分已接入，LLM 生成暂时占位）"""
+async def chat_stream_route(
+    request: ChatRequest,
+    api_key: str = Depends(verify_api_key),
+    x_user_role: str = Header(default="ROLE_EMPLOYEE", alias="X-User-Role"),
+    x_user_department: str = Header(default="全部", alias="X-User-Department"),
+):
+    """SSE 流式对话：RAG 检索 + LLM 生成 + 溯源引用"""
+    # 根据角色确定可见密级
+    security_level = "内部"
+    if x_user_role in ("ROLE_LEADER", "ROLE_ADMIN"):
+        security_level = "机密"
 
-    logger.info(f"Chat request: {request.question[:50]}...")
+    history = [
+        {"role": h.role, "content": h.content}
+        for h in request.history
+    ]
 
-    # 先做检索
-    hits = hybrid_search(
-        query=request.question,
-        department=getattr(request, "department", "全部"),
-        security_level=getattr(request, "security_level", "内部"),
+    return StreamingResponse(
+        answer_with_rag(
+            question=request.question,
+            history=history,
+            department=x_user_department,
+            security_level=security_level,
+        ),
+        media_type="text/event-stream",
     )
-
-    context_texts = [h["text"] for h in hits[:5]]
-
-    async def event_stream():
-        yield f"data: {json.dumps({'type': 'thinking', 'content': f'检索到 {len(hits)} 个相关片段'})}\n\n"
-        if context_texts:
-            yield f"data: {json.dumps({'type': 'answer', 'content': '检索完成，LLM 模块接入后将基于以下上下文生成答案：'})}\n\n"
-            for h in hits[:5]:
-                yield f"data: {json.dumps({'type': 'citation', 'content': h['title'], 'data': h})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'answer', 'content': '知识库中暂无相关信息'})}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
