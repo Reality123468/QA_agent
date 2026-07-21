@@ -11,3 +11,5 @@ venv/
 *.egg-info/
 dist/
 build/
+qdrant_data/
+*.dll
