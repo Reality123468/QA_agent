@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from api.dependencies import verify_api_key
 from api.schemas.chat import ChatRequest
