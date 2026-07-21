@@ -37,9 +37,8 @@ export const documentApi = {
     form.append('title', title)
     form.append('department', department)
     form.append('securityLevel', securityLevel)
-    return api.post('/api/documents/upload', form, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    }).then(res => res.data.data as DocumentItem)
+    return api.post('/api/documents/upload', form)
+      .then(res => res.data.data as DocumentItem)
   },
   delete(id: number) {
     return api.delete(`/api/documents/${id}`).then(res => res.data)

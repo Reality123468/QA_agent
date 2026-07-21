@@ -27,17 +27,13 @@
         />
       </div>
     </div>
-    <UploadDialog
-      v-model="uploadVisible"
-      @upload="handleUpload"
-    />
+    <UploadDialog v-model="uploadVisible" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
 import AppHeader from '@/components/common/AppHeader.vue'
 import DocumentTable from '@/components/document/DocumentTable.vue'
 import UploadDialog from '@/components/document/UploadDialog.vue'
@@ -49,13 +45,6 @@ const uploadVisible = ref(false)
 onMounted(() => {
   store.fetchList()
 })
-
-async function handleUpload(file: File, title: string, department: string, securityLevel: string) {
-  try {
-    await store.upload(file, title, department, securityLevel)
-    uploadVisible.value = false
-  } catch { /* error already shown by interceptor */ }
-}
 
 async function handleDelete(id: number) {
   try {

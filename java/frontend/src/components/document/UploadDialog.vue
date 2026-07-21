@@ -61,12 +61,14 @@ import { ref, reactive, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
+import { useDocumentStore } from '@/stores/document'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
-  upload: [file: File, title: string, department: string, securityLevel: string]
 }>()
+
+const store = useDocumentStore()
 
 const visible = computed({
   get: () => props.modelValue,
@@ -123,7 +125,11 @@ async function handleUpload() {
 
   uploading.value = true
   try {
-    emit('upload', selectedFile, form.title, form.department, form.securityLevel)
+    await store.upload(selectedFile, form.title, form.department, form.securityLevel)
+    visible.value = false
+    resetForm()
+  } catch {
+    // error already shown by store
   } finally {
     uploading.value = false
   }
