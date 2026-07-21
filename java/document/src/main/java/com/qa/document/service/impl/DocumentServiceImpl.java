@@ -127,6 +127,17 @@ public class DocumentServiceImpl implements DocumentService {
             log.error("MinIO delete failed for doc {}", id, e);
         }
 
+        // 异步清理 Qdrant 向量数据（best-effort）
+        try {
+            webClient.delete()
+                    .uri("/api/agent/index/" + id)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .block();
+        } catch (Exception e) {
+            log.warn("Qdrant cleanup failed for doc {} (agent may be offline): {}", id, e.getMessage());
+        }
+
         documentRepository.delete(doc);
     }
 
@@ -149,7 +160,7 @@ public class DocumentServiceImpl implements DocumentService {
                             "department", doc.getDepartment(),
                             "securityLevel", doc.getSecurityLevel()
                     ),
-                    "callbackUrl", "http://localhost:8080/api/documents/status/" + doc.getId()
+                    "callbackUrl", "http://localhost:8081/api/documents/status/" + doc.getId()
             );
 
             webClient.post()

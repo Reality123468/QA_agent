@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from api.dependencies import verify_api_key
 from api.schemas.chat import ChatRequest
 from api.schemas.index import IndexRequest
-from rag.indexer import index_document
+from rag.indexer import index_document, delete_document_chunks
 from llm.rag_chain import answer_with_rag
 router = APIRouter()
 
@@ -16,6 +16,16 @@ async def index_document_route(request: IndexRequest, api_key: str = Depends(ver
         return {"status": "completed", "doc_id": request.document.id}
     except Exception as e:
         return {"status": "failed", "doc_id": request.document.id, "error": str(e)}
+
+
+@router.delete("/index/{doc_id}")
+async def delete_document_route(doc_id: int, api_key: str = Depends(verify_api_key)):
+    """删除文档在 Qdrant 中的所有向量 chunks"""
+    try:
+        delete_document_chunks(doc_id)
+        return {"status": "deleted", "doc_id": doc_id}
+    except Exception as e:
+        return {"status": "failed", "doc_id": doc_id, "error": str(e)}
 
 
 @router.post("/chat/stream")

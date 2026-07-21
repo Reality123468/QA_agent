@@ -101,3 +101,10 @@ def _delete_doc_chunks(client, doc_id: int):
         ),
     )
     logger.info(f"Deleted existing chunks for doc {doc_id}")
+
+
+def delete_document_chunks(doc_id: int) -> None:
+    """公共接口：删除指定文档在 Qdrant 中的所有向量"""
+    client = get_qdrant_client()
+    _ensure_collection(client)
+    _delete_doc_chunks(client, doc_id)

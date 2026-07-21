@@ -23,9 +23,6 @@ public class ChatServiceImpl implements ChatService {
     private final WebClient webClient;
     private final AuditLogService auditLogService;
 
-    @Value("${app.agent.base-url}")
-    private String agentBaseUrl;
-
     @Value("${app.agent.api-key}")
     private String apiKey;
 
