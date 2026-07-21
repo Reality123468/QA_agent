@@ -54,9 +54,7 @@ async function handleUpload(file: File, title: string, department: string, secur
   try {
     await store.upload(file, title, department, securityLevel)
     uploadVisible.value = false
-  } catch (e: any) {
-    ElMessage.error(e?.message || '上传失败')
-  }
+  } catch { /* error already shown by interceptor */ }
 }
 
 async function handleDelete(id: number) {
