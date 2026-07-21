@@ -25,6 +25,7 @@
         <module>chat</module>
         <module>audit</module>
         <module>launcher</module>
+        <module>frontend</module>
     </modules>
 
     <properties>

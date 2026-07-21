@@ -4,3 +4,6 @@ target/
 *.log
 .idea/
 *.iml
+node_modules/
+dist/
+.npm-cache/
