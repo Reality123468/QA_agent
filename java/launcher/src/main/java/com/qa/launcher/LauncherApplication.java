@@ -14,8 +14,8 @@ import java.util.Map;
 
 public class LauncherApplication {
 
-    private static final String[] MODULES = {"auth", "document", "chat", "audit"};
-    private static final int[] PORTS = {8080, 8081, 8082, 8083};
+    private static final String[] MODULES = {"auth", "document", "chat", "audit", "frontend"};
+    private static final int[] PORTS = {8080, 8081, 8082, 8083, 5173};
     private static final int START_DELAY_MS = 4000;
     private static final int HEALTH_CHECK_TIMEOUT_S = 120;
 
@@ -75,10 +75,18 @@ public class LauncherApplication {
             File logFile = logsDir.resolve(module + ".log").toFile();
             logFiles.put(module, logFile);
 
-            ProcessBuilder pb = new ProcessBuilder(
-                    mvnCmd, "-pl", module, "spring-boot:run"
-            );
-            pb.directory(javaDir);
+            ProcessBuilder pb;
+            if (module.equals("frontend")) {
+                pb = new ProcessBuilder(
+                        isWindows() ? "npm.cmd" : "npm", "run", "dev"
+                );
+                pb.directory(new File(javaDir, "frontend"));
+            } else {
+                pb = new ProcessBuilder(
+                        mvnCmd, "-pl", module, "spring-boot:run"
+                );
+                pb.directory(javaDir);
+            }
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.to(logFile));
             // Ensure Maven uses the correct Java home
@@ -118,6 +126,7 @@ public class LauncherApplication {
         System.out.println("  Document: http://localhost:8081/api/documents");
         System.out.println("  Chat:     http://localhost:8082/api/chat/stream");
         System.out.println("  Audit:    http://localhost:8083/api/audit/logs");
+        System.out.println("  Frontend: http://localhost:5173");
         System.out.println();
         System.out.println("Logs: " + logsDir);
         System.out.println("Press Ctrl+C to stop all modules.");
@@ -156,7 +165,8 @@ public class LauncherApplication {
 
     private static boolean isPortReady(int port) {
         try {
-            URL url = new URL("http://localhost:" + port + "/api/auth/login");
+            String path = port == 5173 ? "/" : "/api/auth/login";
+            URL url = new URL("http://localhost:" + port + path);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(2000);
             conn.setReadTimeout(2000);
