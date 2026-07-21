@@ -37,7 +37,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import AppHeader from '@/components/common/AppHeader.vue'
 import DocumentTable from '@/components/document/DocumentTable.vue'
 import UploadDialog from '@/components/document/UploadDialog.vue'
@@ -50,15 +50,19 @@ onMounted(() => {
   store.fetchList()
 })
 
-function handleUpload(file: File, title: string, department: string, securityLevel: string) {
-  store.upload(file, title, department, securityLevel)
+async function handleUpload(file: File, title: string, department: string, securityLevel: string) {
+  try {
+    await store.upload(file, title, department, securityLevel)
+    uploadVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message || '上传失败')
+  }
 }
 
 async function handleDelete(id: number) {
   try {
-    await ElMessageBox.confirm('确定删除此文档?', '确认删除', { type: 'warning' })
     await store.deleteDoc(id)
-  } catch { /* cancelled */ }
+  } catch { /* error already shown by store */ }
 }
 </script>
 

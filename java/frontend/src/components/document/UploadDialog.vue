@@ -124,8 +124,6 @@ async function handleUpload() {
   uploading.value = true
   try {
     emit('upload', selectedFile, form.title, form.department, form.securityLevel)
-    visible.value = false
-    resetForm()
   } finally {
     uploading.value = false
   }
