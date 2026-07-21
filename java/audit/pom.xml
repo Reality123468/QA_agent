@@ -11,8 +11,8 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>qa-chat</artifactId>
-    <name>QA Chat</name>
+    <artifactId>qa-audit</artifactId>
+    <name>QA Audit</name>
 
     <dependencies>
         <dependency>
@@ -25,14 +25,17 @@
             <artifactId>qa-auth</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>com.qa</groupId>
-            <artifactId>qa-audit</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

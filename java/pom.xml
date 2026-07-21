@@ -23,6 +23,7 @@
         <module>auth</module>
         <module>document</module>
         <module>chat</module>
+        <module>audit</module>
     </modules>
 
     <properties>
