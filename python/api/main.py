@@ -1,12 +1,13 @@
 import logging
-from dotenv import load_dotenv
 from pathlib import Path
+
+# Load .env from project root BEFORE any imports that read environment variables
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import health_routes, agent_routes
-
-# Load .env from project root
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

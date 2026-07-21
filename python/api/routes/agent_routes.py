@@ -1,5 +1,3 @@
-import json
-import logging
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from api.dependencies import verify_api_key
@@ -7,8 +5,6 @@ from api.schemas.chat import ChatRequest
 from api.schemas.index import IndexRequest
 from rag.indexer import index_document
 from llm.rag_chain import answer_with_rag
-
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -19,7 +15,6 @@ async def index_document_route(request: IndexRequest, api_key: str = Depends(ver
         index_document(request.document.model_dump())
         return {"status": "completed", "doc_id": request.document.id}
     except Exception as e:
-        logger.error(f"Index failed: {e}", exc_info=True)
         return {"status": "failed", "doc_id": request.document.id, "error": str(e)}
 
 

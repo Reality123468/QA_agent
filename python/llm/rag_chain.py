@@ -1,4 +1,5 @@
 import json
+import asyncio
 import logging
 from typing import List, AsyncGenerator
 from rag.retriever import hybrid_search
@@ -35,7 +36,7 @@ async def answer_with_rag(question: str, history: List[dict] = None,
     yield f"data: {json.dumps({'type': 'thinking', 'content': '正在检索相关文档...'}, ensure_ascii=False)}\n\n"
 
     # Step 2: 检索
-    hits = hybrid_search(question, department=department, security_level=security_level)
+    hits = await asyncio.to_thread(hybrid_search, question, department=department, security_level=security_level)
 
     if not hits:
         yield f"data: {json.dumps({'type': 'answer', 'content': '知识库中暂无相关信息，我无法准确回答该问题。'}, ensure_ascii=False)}\n\n"
@@ -60,13 +61,15 @@ async def answer_with_rag(question: str, history: List[dict] = None,
     # Step 4: 流式生成
     full_answer = ""
     try:
-        for token in chat_stream(messages):
+        async for token in chat_stream(messages):
             full_answer += token
             yield f"data: {json.dumps({'type': 'answer', 'content': token}, ensure_ascii=False)}\n\n"
     except Exception as e:
         logger.error(f"LLM generation failed: {e}")
         yield f"data: {json.dumps({'type': 'error', 'content': 'AI服务暂时不可用，请稍后重试'})}\n\n"
         return
+
+    logger.info(f"RAG answer complete ({len(full_answer)} chars): {full_answer[:200]}...")
 
     # Step 5: 溯源引用
     citations = [
