@@ -24,6 +24,7 @@
         <module>document</module>
         <module>chat</module>
         <module>audit</module>
+        <module>launcher</module>
     </modules>
 
     <properties>
