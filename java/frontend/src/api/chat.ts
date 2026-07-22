@@ -60,14 +60,15 @@ export function createChatStream(
 
       for (const line of lines) {
         const trimmed = line.trim()
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.substring(6)
-          if (data === '[DONE]') {
+        if (trimmed.startsWith('data:')) {
+          let payload = trimmed.substring(5)
+          if (payload.startsWith(' ')) payload = payload.substring(1)
+          if (payload === '[DONE]') {
             callbacks.onDone()
             return
           }
           try {
-            const parsed: SSEEvent = JSON.parse(data)
+            const parsed: SSEEvent = JSON.parse(payload)
             callbacks.onMessage(parsed)
           } catch {
             // skip unparseable lines

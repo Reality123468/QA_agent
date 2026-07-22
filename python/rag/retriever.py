@@ -49,16 +49,21 @@ def hybrid_search(
             )
         )
 
-    results = client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vector,
-        query_filter=Filter(must=must_conditions),
-        limit=top_k,
-        with_payload=True,
-    )
+    try:
+        results = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            query_filter=Filter(must=must_conditions),
+            limit=top_k,
+            with_payload=True,
+        )
+        points = results.points
+    except Exception:
+        logger.warning(f"Qdrant query failed (collection may not exist), returning empty results")
+        points = []
 
     hits = []
-    for r in results.points:
+    for r in points:
         hits.append({
             "text": r.payload.get("text", ""),
             "title": r.payload.get("title", ""),

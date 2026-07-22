@@ -58,11 +58,8 @@ public class LauncherApplication {
             System.out.println("All modules stopped.");
         }));
 
-        // Determine mvn command (try mvnw first, then mvn)
-        String mvnCmd = new File(javaDir, isWindows() ? "mvnw.cmd" : "mvnw").exists() ? "mvnw" : "mvn";
-        if (isWindows()) {
-            mvnCmd = new File(javaDir, "mvnw.cmd").exists() ? "mvnw.cmd" : "mvn";
-        }
+        // Resolve mvn executable with full path (ProcessBuilder needs it when PATH isn't inherited)
+        String mvnCmd = resolveMaven(javaDir);
 
         // Start each module
         Map<String, File> logFiles = new LinkedHashMap<>();
@@ -77,9 +74,8 @@ public class LauncherApplication {
 
             ProcessBuilder pb;
             if (module.equals("frontend")) {
-                pb = new ProcessBuilder(
-                        isWindows() ? "npm.cmd" : "npm", "run", "dev"
-                );
+                String npmCmd = resolveNpm();
+                pb = new ProcessBuilder(npmCmd, "run", "dev");
                 pb.directory(new File(javaDir, "frontend"));
             } else {
                 pb = new ProcessBuilder(
@@ -130,6 +126,10 @@ public class LauncherApplication {
         System.out.println();
         System.out.println("Logs: " + logsDir);
         System.out.println("Press Ctrl+C to stop all modules.");
+        System.out.println();
+
+        // Block main thread so child processes keep running
+        try { Thread.currentThread().join(); } catch (InterruptedException ignored) {}
     }
 
     private static boolean waitForReady(int[] ports, String[] modules, int timeoutSeconds) {
@@ -182,5 +182,45 @@ public class LauncherApplication {
 
     private static boolean isWindows() {
         return System.getProperty("os.name").toLowerCase().contains("win");
+    }
+
+    private static String resolveNpm() {
+        String npmName = "npm" + (isWindows() ? ".cmd" : "");
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv != null) {
+            for (String dir : pathEnv.split(File.pathSeparator)) {
+                File npm = new File(dir, npmName);
+                if (npm.exists()) return npm.getAbsolutePath();
+            }
+        }
+        return npmName; // fallback
+    }
+
+    private static String resolveMaven(File javaDir) {
+        String winExt = isWindows() ? ".cmd" : "";
+
+        // 1. Try mvnw in java/ first
+        String mvnwName = "mvnw" + winExt;
+        File mvnw = new File(javaDir, mvnwName);
+        if (mvnw.exists()) return mvnw.getAbsolutePath();
+
+        // 2. Try MAVEN_HOME/bin/mvn
+        String mavenHome = System.getenv("MAVEN_HOME");
+        if (mavenHome != null) {
+            File mvn = new File(new File(mavenHome, "bin"), "mvn" + winExt);
+            if (mvn.exists()) return mvn.getAbsolutePath();
+        }
+
+        // 3. Search PATH for mvn
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv != null) {
+            for (String dir : pathEnv.split(File.pathSeparator)) {
+                File mvn = new File(new File(dir), "mvn" + winExt);
+                if (mvn.exists()) return mvn.getAbsolutePath();
+            }
+        }
+
+        // 4. Fallback
+        return "mvn" + winExt;
     }
 }

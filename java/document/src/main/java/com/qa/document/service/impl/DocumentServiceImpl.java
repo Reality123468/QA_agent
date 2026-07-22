@@ -151,16 +151,17 @@ public class DocumentServiceImpl implements DocumentService {
         documentRepository.save(doc);
 
         try {
+            String fileUrl = minioEndpoint + "/" + doc.getFilePath();
             Map<String, Object> requestBody = Map.of(
                     "document", Map.of(
                             "id", doc.getId(),
                             "title", doc.getTitle(),
-                            "filePath", doc.getFilePath(),
-                            "fileType", doc.getFileType(),
+                            "file_path", fileUrl,
+                            "file_type", doc.getFileType(),
                             "department", doc.getDepartment(),
-                            "securityLevel", doc.getSecurityLevel()
+                            "security_level", doc.getSecurityLevel()
                     ),
-                    "callbackUrl", "http://localhost:8081/api/documents/status/" + doc.getId()
+                    "callback_url", "http://localhost:8081/api/documents/status/" + doc.getId()
             );
 
             webClient.post()
