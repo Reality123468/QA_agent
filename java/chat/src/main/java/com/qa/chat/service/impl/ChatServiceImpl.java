@@ -88,6 +88,11 @@ public class ChatServiceImpl implements ChatService {
 
         final Long conversationId = conv.getId();
 
+        // Normalize: ensure history is never null (Pydantic rejects null)
+        if (request.getHistory() == null) {
+            request.setHistory(java.util.Collections.emptyList());
+        }
+
         return webClient.post()
                 .uri("/api/agent/chat/stream")
                 .header("X-API-Key", apiKey)

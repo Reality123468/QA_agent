@@ -100,11 +100,15 @@ async def _search_only_stream(question: str, department: str, security_level: st
 
 
 async def _agent_stream(question: str, history: list, department: str, security_level: str):
-    """Agent 模式：ReAct 推理循环 + 流式输出"""
+    """Agent 模式：ReAct 推理循环 + 流式输出
+
+    使用 graph.astream() 流式获取状态更新。从 agent 节点输出中提取
+    action（tool_calls）事件，从 tools 节点输出中提取 observation 事件，
+    并在流中直接捕获最终答案（无 tool_calls 的 AIMessage）。
+    """
     try:
         graph = get_agent_graph()
 
-        # 构建初始状态
         initial_state: AgentState = {
             "messages": [HumanMessage(content=question)],
             "department": department,
@@ -112,46 +116,49 @@ async def _agent_stream(question: str, history: list, department: str, security_
             "retrieved_docs": [],
         }
 
-        # 使用 config 传递 thread_id 实现多轮对话记忆
-        config = {"configurable": {"thread_id": f"agent-{hash(question)}"}}
+        config = {
+            "configurable": {"thread_id": f"agent-{hash(question)}"},
+            "recursion_limit": 10,
+        }
 
-        # 流式执行 Agent 图
+        yield f"data: {json.dumps({'type': 'thought', 'content': '正在分析问题...'}, ensure_ascii=False)}\n\n"
+
         final_answer = ""
-        async for event in graph.astream_events(initial_state, config=config, version="v2"):
-            kind = event.get("event")
+        msg_count = 0
+        async for chunk in graph.astream(initial_state, config=config, stream_mode="values"):
+            msgs = chunk.get("messages", [])
+            if len(msgs) <= msg_count:
+                continue
+            # 只处理新增的消息
+            new_msgs = msgs[msg_count:]
+            msg_count = len(msgs)
+            for msg in new_msgs:
+                # 检查 AIMessage 是否有 tool_calls → yield action 事件
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    for tc in tool_calls:
+                        tc_name = tc.get("name", "unknown") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
+                        tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                        yield f"data: {json.dumps({'type': 'action', 'content': f'执行: {tc_name}', 'data': {'tool': tc_name, 'args': tc_args}}, ensure_ascii=False)}\n\n"
+                    continue
 
-            if kind == "on_chat_model_start":
-                # Agent 开始思考
-                yield f"data: {json.dumps({'type': 'thought', 'content': '正在分析问题...'}, ensure_ascii=False)}\n\n"
+                # 检查 ToolMessage → yield observation 事件
+                is_tool_msg = hasattr(msg, "tool_call_id") and getattr(msg, "tool_call_id", None)
+                if is_tool_msg:
+                    preview = str(msg.content)[:200] + ("..." if len(str(msg.content)) > 200 else "")
+                    yield f"data: {json.dumps({'type': 'observation', 'content': preview}, ensure_ascii=False)}\n\n"
+                    continue
 
-            elif kind == "on_chat_model_stream":
-                # Agent 推理过程（tool_calls 的 arguments 或 content）
-                chunk = event.get("data", {}).get("chunk", {})
-                if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
-                    for tc in chunk.tool_call_chunks:
-                        if tc.name:
-                            yield f"data: {json.dumps({'type': 'action', 'content': f'调用工具: {tc.name}', 'data': {'tool': tc.name}}, ensure_ascii=False)}\n\n"
+                # AIMessage 无 tool_calls → 最终答案（取最后一个）
+                content = getattr(msg, "content", None)
+                if content:
+                    final_answer = content
 
-            elif kind == "on_tool_start":
-                tool_name = event.get("name", "unknown")
-                tool_input = event.get("data", {}).get("input", {})
-                yield f"data: {json.dumps({'type': 'action', 'content': f'执行: {tool_name}', 'data': {'tool': tool_name, 'args': tool_input}}, ensure_ascii=False)}\n\n"
-
-            elif kind == "on_tool_end":
-                output = event.get("data", {}).get("output", "")
-                preview = str(output)[:200] + ("..." if len(str(output)) > 200 else "")
-                yield f"data: {json.dumps({'type': 'observation', 'content': preview}, ensure_ascii=False)}\n\n"
-
-            elif kind == "on_chat_model_end":
-                msg = event.get("data", {}).get("output", {})
-                if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                    final_answer = msg.content
-
-        # 流式输出最终答案
         if final_answer:
             for char in final_answer:
                 yield f"data: {json.dumps({'type': 'answer', 'content': char}, ensure_ascii=False)}\n\n"
         else:
+            logger.warning(f"[_agent_stream] No final answer captured. Total msgs: {msg_count}")
             yield f"data: {json.dumps({'type': 'answer', 'content': '抱歉，我无法回答该问题。'}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
