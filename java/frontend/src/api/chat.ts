@@ -3,6 +3,52 @@ export interface HistoryMessage {
   content: string
 }
 
+export interface ConversationDto {
+  id: number
+  title: string
+  updatedAt: string
+  messageCount: number
+}
+
+export interface MessageDto {
+  id: number
+  role: string
+  content: string
+  citations: any[]
+  agentSteps: any[]
+  timestamp: string
+}
+
+export async function listConversations(): Promise<ConversationDto[]> {
+  const token = localStorage.getItem('token')
+  const res = await fetch('/api/chat/conversations', {
+    headers: { 'Authorization': token ? `Bearer ${token}` : '' }
+  })
+  const json = await res.json()
+  if (json.code !== 200) throw new Error(json.message || '加载会话列表失败')
+  return json.data
+}
+
+export async function getMessages(conversationId: number): Promise<MessageDto[]> {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`/api/chat/conversations/${conversationId}`, {
+    headers: { 'Authorization': token ? `Bearer ${token}` : '' }
+  })
+  const json = await res.json()
+  if (json.code !== 200) throw new Error(json.message || '加载消息失败')
+  return json.data
+}
+
+export async function deleteConversation(conversationId: number): Promise<void> {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`/api/chat/conversations/${conversationId}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': token ? `Bearer ${token}` : '' }
+  })
+  const json = await res.json()
+  if (json.code !== 200) throw new Error(json.message || '删除会话失败')
+}
+
 export interface SSEEvent {
   type: 'thinking' | 'answer' | 'citation' | 'done' | 'error' | 'thought' | 'action' | 'observation'
   content: string
@@ -19,7 +65,8 @@ export function createChatStream(
   question: string,
   history: HistoryMessage[],
   callbacks: SSECallbacks,
-  mode: string = 'rag'
+  mode: string = 'rag',
+  conversationId?: number | null
 ): AbortController {
   const controller = new AbortController()
   const token = localStorage.getItem('token')
@@ -30,7 +77,7 @@ export function createChatStream(
       'Content-Type': 'application/json',
       'Authorization': token ? `Bearer ${token}` : ''
     },
-    body: JSON.stringify({ question, history: history || [], mode }),
+    body: JSON.stringify({ question, history: history || [], mode, conversationId }),
     signal: controller.signal
   }).then(async response => {
     if (!response.ok) {

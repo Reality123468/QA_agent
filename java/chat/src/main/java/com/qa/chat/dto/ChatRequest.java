@@ -9,6 +9,7 @@ public class ChatRequest {
     private String question;
     private List<HistoryMessage> history;
     private String mode = "rag";
+    private Long conversationId;
 
     public ChatRequest() {
     }
@@ -41,5 +42,13 @@ public class ChatRequest {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public Long getConversationId() {
+        return conversationId;
+    }
+
+    public void setConversationId(Long conversationId) {
+        this.conversationId = conversationId;
     }
 }

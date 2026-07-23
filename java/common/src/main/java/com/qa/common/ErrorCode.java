@@ -10,6 +10,7 @@ public enum ErrorCode {
     FILE_SIZE_EXCEEDED(2002, "文件大小超出限制"),
     DOCUMENT_INDEX_FAILED(2003, "文档索引失败"),
     DOCUMENT_NOT_FOUND(2004, "文档不存在"),
+    NOT_FOUND(4004, "资源不存在"),
     AI_SERVICE_UNAVAILABLE(3001, "AI服务暂时不可用"),
     AI_TIMEOUT(3002, "AI服务响应超时"),
     FORBIDDEN(4003, "无权限访问"),

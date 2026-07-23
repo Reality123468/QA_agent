@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { createChatStream, SSEEvent, HistoryMessage } from '@/api/chat'
+import { createChatStream, SSEEvent, HistoryMessage, listConversations, getMessages, deleteConversation, ConversationDto } from '@/api/chat'
 
 export interface AgentStep {
   type: 'thought' | 'action' | 'observation'
@@ -29,11 +29,69 @@ export interface Citation {
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
+  const conversations = ref<ConversationDto[]>([])
+  const currentConversationId = ref<number | null>(null)
+  const conversationsLoading = ref(false)
   let abortController: AbortController | null = null
   const historyMessages = ref<HistoryMessage[]>([])
 
   function generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).substring(2)
+  }
+
+  async function loadConversations() {
+    conversationsLoading.value = true
+    try {
+      conversations.value = await listConversations()
+    } catch (e) {
+      console.error('Failed to load conversations:', e)
+    } finally {
+      conversationsLoading.value = false
+    }
+  }
+
+  async function switchConversation(conversationId: number) {
+    if (isStreaming.value) return
+    try {
+      const msgs = await getMessages(conversationId)
+      messages.value = msgs.map(m => ({
+        id: String(m.id),
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        citations: m.citations || [],
+        agentSteps: m.agentSteps || [],
+        isStreaming: false,
+        timestamp: new Date(m.timestamp).getTime()
+      }))
+      currentConversationId.value = conversationId
+
+      // rebuild history for context
+      historyMessages.value = msgs
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .slice(-20)
+        .map(m => ({ role: m.role, content: m.content }))
+    } catch (e) {
+      console.error('Failed to load messages:', e)
+    }
+  }
+
+  async function removeConversation(conversationId: number) {
+    try {
+      await deleteConversation(conversationId)
+      conversations.value = conversations.value.filter(c => c.id !== conversationId)
+      if (currentConversationId.value === conversationId) {
+        newConversation()
+      }
+    } catch (e) {
+      console.error('Failed to delete conversation:', e)
+    }
+  }
+
+  function newConversation() {
+    if (isStreaming.value) return
+    messages.value = []
+    currentConversationId.value = null
+    historyMessages.value = []
   }
 
   function sendMessage(question: string, mode: string = 'rag') {
@@ -141,9 +199,12 @@ export const useChatStore = defineStore('chat', () => {
           if (historyMessages.value.length > 20) {
             historyMessages.value = historyMessages.value.slice(-20)
           }
+          // Reload conversation list to reflect new/updated conversation
+          loadConversations()
         }
       },
-      mode
+      mode,
+      currentConversationId.value
     )
   }
 
@@ -160,5 +221,9 @@ export const useChatStore = defineStore('chat', () => {
     historyMessages.value = []
   }
 
-  return { messages, isStreaming, sendMessage, stopStreaming, clearHistory }
+  return {
+    messages, isStreaming, conversations, currentConversationId,
+    conversationsLoading, sendMessage, stopStreaming, clearHistory,
+    loadConversations, switchConversation, removeConversation, newConversation
+  }
 })
