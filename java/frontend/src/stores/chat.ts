@@ -2,11 +2,19 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { createChatStream, SSEEvent, HistoryMessage } from '@/api/chat'
 
+export interface AgentStep {
+  type: 'thought' | 'action' | 'observation'
+  content: string
+  tool?: string
+  args?: Record<string, any>
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
   citations: Citation[]
+  agentSteps: AgentStep[]
   isStreaming: boolean
   timestamp: number
 }
@@ -28,7 +36,7 @@ export const useChatStore = defineStore('chat', () => {
     return Date.now().toString(36) + Math.random().toString(36).substring(2)
   }
 
-  function sendMessage(question: string) {
+  function sendMessage(question: string, mode: string = 'rag') {
     if (isStreaming.value) return
 
     const userMsg: ChatMessage = {
@@ -36,6 +44,7 @@ export const useChatStore = defineStore('chat', () => {
       role: 'user',
       content: question,
       citations: [],
+      agentSteps: [],
       isStreaming: false,
       timestamp: Date.now()
     }
@@ -46,6 +55,7 @@ export const useChatStore = defineStore('chat', () => {
       role: 'assistant',
       content: '',
       citations: [],
+      agentSteps: [],
       isStreaming: true,
       timestamp: Date.now()
     }
@@ -62,10 +72,30 @@ export const useChatStore = defineStore('chat', () => {
 
           switch (event.type) {
             case 'thinking':
-              msg.content = event.content
+              if (!msg.content) msg.content = event.content
+              break
+            case 'thought':
+              msg.agentSteps.push({
+                type: 'thought',
+                content: event.content
+              })
+              break
+            case 'action':
+              msg.agentSteps.push({
+                type: 'action',
+                content: event.content,
+                tool: event.data?.tool,
+                args: event.data?.args
+              })
+              break
+            case 'observation':
+              msg.agentSteps.push({
+                type: 'observation',
+                content: event.content
+              })
               break
             case 'answer':
-              if (msg.content.startsWith('思考中')) msg.content = ''
+              if (msg.content.startsWith('思考中') || msg.content.startsWith('正在')) msg.content = ''
               msg.content += event.content || ''
               break
             case 'citation':
@@ -112,7 +142,8 @@ export const useChatStore = defineStore('chat', () => {
             historyMessages.value = historyMessages.value.slice(-20)
           }
         }
-      }
+      },
+      mode
     )
   }
 

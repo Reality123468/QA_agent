@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 
 class HistoryMessage(BaseModel):
@@ -10,9 +10,10 @@ class HistoryMessage(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     history: List[HistoryMessage] = []
+    mode: Literal["rag", "agent", "search-only"] = "rag"
 
 
 class ChatResponse(BaseModel):
-    type: str  # thinking / answer / citation / done / error
+    type: str  # thinking / answer / citation / thought / action / observation / done / error
     content: str
     data: Optional[dict] = None

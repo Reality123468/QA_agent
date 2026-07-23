@@ -4,7 +4,7 @@ export interface HistoryMessage {
 }
 
 export interface SSEEvent {
-  type: 'thinking' | 'answer' | 'citation' | 'done' | 'error'
+  type: 'thinking' | 'answer' | 'citation' | 'done' | 'error' | 'thought' | 'action' | 'observation'
   content: string
   data: any
 }
@@ -18,7 +18,8 @@ export interface SSECallbacks {
 export function createChatStream(
   question: string,
   history: HistoryMessage[],
-  callbacks: SSECallbacks
+  callbacks: SSECallbacks,
+  mode: string = 'rag'
 ): AbortController {
   const controller = new AbortController()
   const token = localStorage.getItem('token')
@@ -29,7 +30,7 @@ export function createChatStream(
       'Content-Type': 'application/json',
       'Authorization': token ? `Bearer ${token}` : ''
     },
-    body: JSON.stringify({ question, history: history || [] }),
+    body: JSON.stringify({ question, history: history || [], mode }),
     signal: controller.signal
   }).then(async response => {
     if (!response.ok) {

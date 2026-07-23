@@ -8,13 +8,15 @@ public class ChatRequest {
     @NotBlank(message = "问题不能为空")
     private String question;
     private List<HistoryMessage> history;
+    private String mode = "rag";
 
     public ChatRequest() {
     }
 
-    public ChatRequest(String question, List<HistoryMessage> history) {
+    public ChatRequest(String question, List<HistoryMessage> history, String mode) {
         this.question = question;
         this.history = history;
+        this.mode = mode;
     }
 
     public String getQuestion() {
@@ -31,5 +33,13 @@ public class ChatRequest {
 
     public void setHistory(List<HistoryMessage> history) {
         this.history = history;
+    }
+
+    public String getMode() {
+        return mode;
+    }
+
+    public void setMode(String mode) {
+        this.mode = mode;
     }
 }

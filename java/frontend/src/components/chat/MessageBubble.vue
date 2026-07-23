@@ -1,6 +1,7 @@
 <template>
   <div class="message-row" :class="message.role">
     <div class="message-bubble" :class="message.role">
+      <AgentThinking v-if="message.role === 'assistant'" :steps="message.agentSteps" />
       <div class="message-content" v-html="renderedContent"></div>
       <div v-if="message.isStreaming" class="typing-cursor">|</div>
       <CitationCard
@@ -17,6 +18,7 @@ import { computed } from 'vue'
 import { marked } from 'marked'
 import type { ChatMessage } from '@/stores/chat'
 import CitationCard from './CitationCard.vue'
+import AgentThinking from './AgentThinking.vue'
 
 const props = defineProps<{
   message: ChatMessage
