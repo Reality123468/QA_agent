@@ -80,12 +80,18 @@
 
 ### 企业内部智能问答系统（RAG + LangGraph Agent）— 独立开发
 
-- 设计并实现 **Java Spring Boot + Python FastAPI** 两层异构架构，7 个 Maven 模块 + 1 个 AI 服务，Docker Compose 6 容器全栈编排
-- 构建 **RAG 检索增强生成流水线**：多格式文档解析 → 格式感知分块 → 三级 Embedding 降级 → Qdrant 向量检索 + RBAC 权限过滤 → LLM 流式生成 + 原文溯源
-- 实现 **LangGraph Agent 自主推理**：ReAct 循环 + 4 个工具 + OpenAI function-calling，支持多步搜索和三种对话模式切换
-- 实现 **Vue 3 + TypeScript** 前端：POST 方式 SSE 流式解析（8 种事件类型）、Agent 推理过程可视化、WebSocket 实时索引进度、会话历史管理
-- 使用 **Docker Compose** 一键部署 6 个服务（MySQL + Qdrant + MinIO + Python + Java + Nginx），编写 ProcessBuilder 本地开发启动器
-- 解决 Windows 跨平台兼容问题（ProcessBuilder PATH 继承、MinIO 文件锁、跨语言消息格式转换、Pydantic null 校验）
+**S（情境）：** 企业知识分散在多个系统，传统关键词搜索无法理解语义，通用大模型不了解企业内部知识且容易编造答案。
+
+**T（任务）：** 构建支持自主推理的 RAG 智能问答系统，实现文档语义检索、Agent 多步推理、流式对话、会话历史管理和容器化部署。
+
+**A（行动）：**
+- **Agent 自主推理引擎** — 基于 LangGraph StateGraph 构建 ReAct 循环（思考→工具调用→观察→回答），设计 4 个 LangChain Tool（政策检索、文档检索、员工查询、文档详情），LLM 通过 OpenAI function-calling 格式自主决策工具调用，MemorySaver 持久化多轮对话状态，最多 10 轮推理，三种对话模式可切换（RAG / Agent / 纯检索）
+- **RAG 检索增强生成** — 格式感知的文档分块（Markdown 按标题、PDF 按字符 800/150），三级 Embedding 降级策略（API 1536-dim → 本地 384-dim → 零依赖兜底），Qdrant 向量检索 + 部门/密级权限过滤，Prompt 工程约束反幻觉
+- **Agent 流式可视化** — 用 fetch + ReadableStream 手动解析 SSE（原生 EventSource 仅支持 GET），处理 8 种事件类型，AgentThinking 组件完整呈现推理链，WebSocket 实时索引进度推送
+- **关键难点攻克** — 定位并修复 Agent 流式输出 Bug：`astream_events(v2)` 对非 LangChain 封装的 LLM 调用不触发事件，导致最终答案永远无法提取、前端无限等待超时；改用 `astream(stream_mode="values")` 从状态增量直接区分 AIMessage.tool_calls / ToolMessage / AIMessage.content
+- **工程化部署** — Docker Compose 6 容器全栈编排（MySQL + Qdrant + MinIO + Python + Java + Nginx），多阶段 Docker 构建，解决 Windows 跨平台兼容（ProcessBuilder PATH、MinIO 文件锁、消息格式转换）
+
+**R（结果）：** 8,000+ 行代码，4 种文档格式，3 种对话模式，8 种 SSE 事件类型，Docker 一条命令启动。Agent 可多步搜索复杂问题，推理过程实时可视化，检索结果带权限过滤和原文溯源。
 
 ---
 
