@@ -14,3 +14,4 @@ class DocumentInfo(BaseModel):
 class IndexRequest(BaseModel):
     document: DocumentInfo
     callback_url: Optional[str] = None
+    progress_url: Optional[str] = None

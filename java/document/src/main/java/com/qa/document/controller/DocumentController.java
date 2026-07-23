@@ -4,18 +4,23 @@ import com.qa.common.ApiResult;
 import com.qa.common.PageResult;
 import com.qa.document.dto.DocumentResponse;
 import com.qa.document.service.DocumentService;
+import com.qa.document.ws.IndexProgressHandler;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/documents")
 public class DocumentController {
 
     private final DocumentService documentService;
+    private final IndexProgressHandler progressHandler;
 
-    public DocumentController(DocumentService documentService) {
+    public DocumentController(DocumentService documentService, IndexProgressHandler progressHandler) {
         this.documentService = documentService;
+        this.progressHandler = progressHandler;
     }
 
     @PostMapping("/upload")
@@ -56,5 +61,13 @@ public class DocumentController {
     @GetMapping("/status/{id}")
     public ApiResult<String> getStatus(@PathVariable Long id) {
         return ApiResult.success(documentService.getStatus(id));
+    }
+
+    @PostMapping("/index-progress/{docId}")
+    public ApiResult<Void> reportProgress(@PathVariable Long docId, @RequestBody Map<String, Object> body) {
+        String status = (String) body.getOrDefault("status", "INDEXING");
+        String message = (String) body.getOrDefault("message", "");
+        progressHandler.broadcastProgress(docId, status, message);
+        return ApiResult.success(null);
     }
 }

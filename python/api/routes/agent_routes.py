@@ -23,7 +23,8 @@ router = APIRouter()
 async def index_document_route(request: IndexRequest, api_key: str = Depends(verify_api_key)):
     """将文档索引到 Qdrant 向量数据库"""
     try:
-        index_document(request.document.model_dump())
+        progress_url = request.progress_url
+        index_document(request.document.model_dump(), progress_url=progress_url)
         return {"status": "completed", "doc_id": request.document.id}
     except Exception as e:
         logger.error(f"Index failed: {e}", exc_info=True)

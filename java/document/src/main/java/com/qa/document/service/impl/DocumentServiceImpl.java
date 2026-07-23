@@ -161,7 +161,8 @@ public class DocumentServiceImpl implements DocumentService {
                             "department", doc.getDepartment(),
                             "security_level", doc.getSecurityLevel()
                     ),
-                    "callback_url", "http://localhost:8081/api/documents/status/" + doc.getId()
+                    "callback_url", "http://localhost:8081/api/documents/status/" + doc.getId(),
+                    "progress_url", "http://localhost:8081/api/documents/index-progress/" + doc.getId()
             );
 
             webClient.post()

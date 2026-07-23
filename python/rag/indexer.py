@@ -1,5 +1,8 @@
 import uuid
+import json
 import logging
+import urllib.request
+from typing import Optional
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from . import get_qdrant_client
@@ -27,7 +30,24 @@ def _ensure_collection(client):
         logger.info(f"Collection '{COLLECTION_NAME}' already exists")
 
 
-def index_document(doc_info: dict) -> None:
+def _send_progress(progress_url: Optional[str], doc_id: int, status: str, message: str):
+    """向 Java 后端发送索引进度"""
+    if not progress_url:
+        return
+    try:
+        data = json.dumps({"status": status, "message": message}).encode("utf-8")
+        req = urllib.request.Request(
+            progress_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        logger.warning(f"Failed to send progress to {progress_url}: {e}")
+
+
+def index_document(doc_info: dict, progress_url: Optional[str] = None) -> None:
     """
     完整索引流程：加载文档 → 分块 → 向量化 → 存入 Qdrant
 
@@ -47,6 +67,7 @@ def index_document(doc_info: dict) -> None:
     security_level = doc_info.get("security_level", "内部")
 
     logger.info(f"Indexing document {doc_id}: {title}")
+    _send_progress(progress_url, doc_id, "INDEXING", "开始索引...")
 
     # 1. 连接 Qdrant 并确保 collection 存在
     client = get_qdrant_client()
@@ -56,16 +77,22 @@ def index_document(doc_info: dict) -> None:
     _delete_doc_chunks(client, doc_id)
 
     # 3. 加载文档
+    _send_progress(progress_url, doc_id, "INDEXING", "正在加载文档...")
     raw_docs = load_document(file_path, file_type)
 
     # 4. 分块
+    _send_progress(progress_url, doc_id, "INDEXING", f"正在分块 ({len(raw_docs)} 个文档)...")
     chunks = split_documents(raw_docs, file_type)
+    _send_progress(progress_url, doc_id, "INDEXING", f"分块完成，共 {len(chunks)} 个片段")
 
     # 5. 向量化
+    _send_progress(progress_url, doc_id, "INDEXING", "正在向量化...")
     texts = [chunk.page_content for chunk in chunks]
     vectors = embed_texts(texts)
+    _send_progress(progress_url, doc_id, "INDEXING", f"向量化完成，{len(vectors)} 个向量")
 
     # 6. 构建 Qdrant points（带 metadata）
+    _send_progress(progress_url, doc_id, "INDEXING", "正在存储到向量库...")
     points = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         payload = {
@@ -83,6 +110,7 @@ def index_document(doc_info: dict) -> None:
 
     client.upsert(collection_name=COLLECTION_NAME, points=points)
     logger.info(f"Indexed {len(points)} chunks for document {doc_id}: {title}")
+    _send_progress(progress_url, doc_id, "COMPLETED", f"索引完成，共 {len(points)} 个片段")
 
 
 def _delete_doc_chunks(client, doc_id: int):

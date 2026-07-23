@@ -9,10 +9,24 @@
           上传文档
         </el-button>
       </div>
+
+      <!-- Index progress alerts -->
+      <div v-for="(p, docId) in store.indexProgress" :key="docId" class="progress-item">
+        <el-alert
+          :title="`文档 #${docId}`"
+          :description="p.message"
+          :type="p.status === 'COMPLETED' ? 'success' : p.status === 'FAILED' ? 'error' : 'info'"
+          :closable="p.status === 'COMPLETED' || p.status === 'FAILED'"
+          show-icon
+          @close="delete store.indexProgress[docId]"
+        />
+      </div>
+
       <div class="table-wrap">
         <DocumentTable
           :documents="store.documents"
           :loading="store.loading"
+          :indexProgress="store.indexProgress"
           @delete="handleDelete"
           @index="store.triggerIndex"
         />
@@ -32,7 +46,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import AppHeader from '@/components/common/AppHeader.vue'
 import DocumentTable from '@/components/document/DocumentTable.vue'
@@ -44,6 +58,11 @@ const uploadVisible = ref(false)
 
 onMounted(() => {
   store.fetchList()
+  store.connectWebSocket()
+})
+
+onUnmounted(() => {
+  store.disconnectWebSocket()
 })
 
 async function handleDelete(id: number) {
@@ -73,6 +92,9 @@ async function handleDelete(id: number) {
 .toolbar h3 {
   font-size: 18px;
   color: #303133;
+}
+.progress-item {
+  margin-bottom: 8px;
 }
 .table-wrap {
   background: #fff;

@@ -20,11 +20,16 @@
         </el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="状态" width="110">
+    <el-table-column label="状态" width="180">
       <template #default="{ row }">
-        <el-tag :type="statusTag(row.status)" size="small">
-          {{ statusLabel(row.status) }}
-        </el-tag>
+        <div class="status-cell">
+          <el-tag :type="statusTag(row.status)" size="small">
+            {{ statusLabel(row.status) }}
+          </el-tag>
+          <span v-if="indexProgress[row.id] && indexProgress[row.id].status === 'INDEXING'" class="progress-msg">
+            {{ indexProgress[row.id].message }}
+          </span>
+        </div>
       </template>
     </el-table-column>
     <el-table-column label="操作" width="160" fixed="right">
@@ -48,9 +53,12 @@
 <script setup lang="ts">
 import type { DocumentItem } from '@/api/document'
 
+import type { IndexProgress } from '@/stores/document'
+
 defineProps<{
   documents: DocumentItem[]
   loading: boolean
+  indexProgress: Record<number, IndexProgress>
 }>()
 
 defineEmits<{
@@ -79,3 +87,15 @@ function statusLabel(status: string): string {
   return map[status] || status
 }
 </script>
+
+<style scoped>
+.status-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.progress-msg {
+  font-size: 11px;
+  color: #909399;
+}
+</style>
