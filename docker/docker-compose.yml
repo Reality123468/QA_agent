@@ -1,9 +1,26 @@
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: qa-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin123456}
+      MYSQL_DATABASE: ${DB_NAME:-qa_agent}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-admin123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qa-qdrant
     ports:
-      - "6333:6333"
+      - "${QDRANT_PORT:-6333}:6333"
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
@@ -14,15 +31,78 @@ services:
     container_name: qa-minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
+      - "${MINIO_PORT:-9000}:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: admin123456
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-admin123456}
     volumes:
       - minio_data:/data
     restart: unless-stopped
 
+  python-agent:
+    build:
+      context: ../python
+      dockerfile: Dockerfile
+    container_name: qa-python-agent
+    ports:
+      - "${PYTHON_PORT:-8000}:8000"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_API_URL=${DEEPSEEK_API_URL:-https://api.deepseek.com}
+      - QDRANT_HOST=${QDRANT_HOST:-qdrant}
+      - QDRANT_PORT=${QDRANT_PORT:-6333}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-http://minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-admin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-admin123456}
+      - AGENT_INTERNAL_API_KEY=${AGENT_API_KEY:-qa-agent-internal-api-key-2026}
+    depends_on:
+      - qdrant
+      - minio
+    restart: unless-stopped
+
+  java-app:
+    build:
+      context: ../java
+      dockerfile: Dockerfile
+    container_name: qa-java-app
+    ports:
+      - "${AUTH_PORT:-8080}:8080"
+      - "${DOCUMENT_PORT:-8081}:8081"
+      - "${CHAT_PORT:-8082}:8082"
+      - "${AUDIT_PORT:-8083}:8083"
+    environment:
+      - DB_HOST=${DB_HOST:-mysql}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_NAME=${DB_NAME:-qa_agent}
+      - DB_USERNAME=${DB_USERNAME:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-admin123456}
+      - JWT_SECRET=${JWT_SECRET:-qa-agent-jwt-secret-key-2026-mvp-minlength-256bit}
+      - JWT_EXPIRATION=${JWT_EXPIRATION:-86400000}
+      - AGENT_API_KEY=${AGENT_API_KEY:-qa-agent-internal-api-key-2026}
+      - AGENT_BASE_URL=${AGENT_BASE_URL:-http://python-agent:8000}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-http://minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-admin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-admin123456}
+      - MINIO_BUCKET=${MINIO_BUCKET:-qa-documents}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      python-agent:
+        condition: service_started
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.nginx
+    container_name: qa-nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      - java-app
+    restart: unless-stopped
+
 volumes:
+  mysql_data:
   qdrant_data:
   minio_data:

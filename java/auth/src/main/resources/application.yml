@@ -2,9 +2,9 @@ spring:
   application:
     name: qa-auth
   datasource:
-    url: jdbc:mysql://localhost:3306/qa_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true
-    username: root
-    password: hwx1314520
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:qa_agent}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:hwx1314520}
     driver-class-name: com.mysql.cj.jdbc.Driver
   jpa:
     hibernate:
@@ -15,9 +15,9 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
 
 server:
-  port: 8080
+  port: ${AUTH_PORT:8080}
 
 app:
   jwt:
-    secret: qa-agent-jwt-secret-key-2026-mvp-minlength-256bit
-    expiration: 86400000
+    secret: ${JWT_SECRET:qa-agent-jwt-secret-key-2026-mvp-minlength-256bit}
+    expiration: ${JWT_EXPIRATION:86400000}
