@@ -14,6 +14,8 @@ export interface ChatMessage {
 export interface Citation {
   title: string
   chunk: string
+  heading?: string
+  page?: number
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -68,10 +70,15 @@ export const useChatStore = defineStore('chat', () => {
               break
             case 'citation':
               if (event.data) {
-                msg.citations.push({
-                  title: event.data.title || '',
-                  chunk: event.data.chunk || event.content || ''
-                })
+                const citationList = Array.isArray(event.data) ? event.data : [event.data]
+                for (const item of citationList) {
+                  msg.citations.push({
+                    title: item.title || '',
+                    chunk: item.chunk || item.content || event.content || '',
+                    heading: item.heading,
+                    page: item.page
+                  })
+                }
               }
               break
             case 'error':

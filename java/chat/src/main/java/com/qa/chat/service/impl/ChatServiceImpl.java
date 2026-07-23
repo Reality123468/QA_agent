@@ -33,7 +33,9 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public Flux<ChatResponse> chatStream(ChatRequest request, String userId, String role, String department) {
-        // Save audit log entry before streaming begins
+        long startTime = System.currentTimeMillis();
+        StringBuilder answerBuffer = new StringBuilder();
+
         AuditLog auditLog = AuditLog.builder()
                 .userId(Long.parseLong(userId))
                 .question(request.getQuestion())
@@ -52,12 +54,31 @@ public class ChatServiceImpl implements ChatService {
                 .retrieve()
                 .bodyToFlux(ChatResponse.class)
                 .timeout(Duration.ofSeconds(60))
-                .onErrorResume(e -> {
+                .doOnNext(event -> {
+                    if ("answer".equals(event.getType()) && event.getContent() != null) {
+                        answerBuffer.append(event.getContent());
+                    }
+                })
+                .doOnComplete(() -> updateAuditLog(auditLog, answerBuffer.toString(), startTime))
+                .doOnError(e -> {
                     log.error("Chat stream error", e);
-                    return Flux.just(ChatResponse.builder()
-                            .type("error")
-                            .content("AI服务暂时不可用，请稍后重试")
-                            .build());
-                });
+                    updateAuditLog(auditLog, answerBuffer.toString(), startTime);
+                })
+                .onErrorResume(e -> Flux.just(ChatResponse.builder()
+                        .type("error")
+                        .content("AI服务暂时不可用，请稍后重试")
+                        .build()));
+    }
+
+    private void updateAuditLog(AuditLog auditLog, String answer, long startTime) {
+        try {
+            int responseTime = (int) (System.currentTimeMillis() - startTime);
+            auditLog.setAnswer(answer.isEmpty() ? null : answer);
+            auditLog.setResponseTime(responseTime);
+            auditLogService.save(auditLog);
+            log.info("Audit log updated: responseTime={}ms, answerLen={}", responseTime, answer.length());
+        } catch (Exception e) {
+            log.error("Failed to update audit log", e);
+        }
     }
 }

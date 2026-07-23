@@ -3,6 +3,8 @@
     <div class="citation-header">
       <el-icon><Document /></el-icon>
       <span class="citation-title">{{ citation.title }}</span>
+      <span v-if="citation.heading" class="citation-heading">{{ citation.heading }}</span>
+      <span v-if="citation.page" class="citation-page">第{{ citation.page }}页</span>
     </div>
     <div class="citation-chunk">{{ citation.chunk }}</div>
   </div>
@@ -35,6 +37,16 @@ defineProps<{
 }
 .citation-title {
   font-weight: 600;
+}
+.citation-heading {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 8px;
+}
+.citation-page {
+  font-size: 12px;
+  color: #c0c4cc;
+  margin-left: 4px;
 }
 .citation-chunk {
   color: #606266;
