@@ -6,6 +6,7 @@ LangGraph Agent 节点实现。
 - tools_node: 执行 LLM 请求的工具调用，返回 Observation
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -14,16 +15,21 @@ from langchain_core.messages import AIMessage, ToolMessage, SystemMessage
 
 from agent.state import AgentState
 from agent.tools import ALL_TOOLS
-from llm.deepseek_client import chat_sync
+from llm.deepseek_client import chat_sync, count_tokens, summarize_history, ensure_token_budget, TOKEN_BUDGET
 
 logger = logging.getLogger(__name__)
 
+AGENT_LLM_TIMEOUT = 30  # Agent LLM 调用超时（秒）
+TOOL_EXEC_TIMEOUT = 15   # 单个工具执行超时（秒）
+
 AGENT_SYSTEM_PROMPT = """你是一名企业智能助手，拥有以下工具可以调用：
 
-1. search_policy(query, department) - 检索企业规章制度（员工手册、财务制度、考勤政策等）
-2. search_doc(query, tags) - 检索技术文档（API接口、系统架构、故障预案等）
-3. search_employee(query) - 查询员工组织架构和通讯录
-4. get_doc_detail(doc_id) - 获取指定文档的完整详细内容
+1. search_knowledge(query, category, department) - 统一知识库检索
+   - category="policy": 检索规章制度（员工手册、财务制度、考勤政策等）
+   - category="tech_doc": 检索技术文档（API接口、系统架构、故障预案等）
+   - category="all": 同时检索所有类型
+2. search_employee(query) - 查询员工组织架构和通讯录
+3. get_doc_detail(doc_id) - 获取指定文档的完整详细内容
 
 请遵循以下工作模式：
 - 先思考（Thought）：分析用户问题，确定需要调用哪些工具
@@ -63,14 +69,31 @@ async def agent_node(state: AgentState) -> dict[str, Any]:
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT)] + list(messages)
 
-    logger.info(f"[AgentNode] invoking LLM with {len(messages)} messages...")
-    response = await chat_sync(
-        messages=messages,
-        model="deepseek-chat",
-        temperature=0.3,
-        max_tokens=1024,
-        tools=TOOLS_OPENAI_FORMAT,
-    )
+    # Token 预算检查 + 历史压缩
+    token_count = count_tokens(messages)
+    if token_count > TOKEN_BUDGET:
+        logger.info(f"[AgentNode] token budget exceeded ({token_count} > {TOKEN_BUDGET}), summarizing history...")
+        SystemMessage_cls = SystemMessage
+        messages = await summarize_history(messages)
+        # summarize_history 返回 [系统摘要, ...最近消息]，前面插入 Agent system prompt
+        messages = [SystemMessage_cls(content=AGENT_SYSTEM_PROMPT)] + list(messages)
+        messages = ensure_token_budget(messages)
+
+    logger.info(f"[AgentNode] invoking LLM with {len(messages)} messages (~{count_tokens(messages)} tokens)...")
+    try:
+        response = await asyncio.wait_for(
+            chat_sync(
+                messages=messages,
+                model="deepseek-v4-pro",
+                temperature=0.3,
+                max_tokens=1024,
+                tools=TOOLS_OPENAI_FORMAT,
+            ),
+            timeout=AGENT_LLM_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"[AgentNode] LLM call timed out after {AGENT_LLM_TIMEOUT}s")
+        return {"messages": [AIMessage(content="AI 推理超时，请简化问题后重试。")]}
 
     ai_message = AIMessage(
         content=response.content or "",
@@ -110,9 +133,19 @@ async def tools_node(state: AgentState) -> dict[str, Any]:
         tool_fn = TOOL_BY_NAME.get(tool_name)
         if tool_fn:
             try:
-                result = tool_fn.invoke(tool_args)
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(tool_fn.invoke, tool_args),
+                    timeout=TOOL_EXEC_TIMEOUT,
+                )
                 tool_messages.append(ToolMessage(
                     content=str(result),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ))
+            except asyncio.TimeoutError:
+                logger.error(f"[ToolsNode] {tool_name} timed out after {TOOL_EXEC_TIMEOUT}s")
+                tool_messages.append(ToolMessage(
+                    content=f"工具 {tool_name} 执行超时，请稍后重试。",
                     tool_call_id=tool_call_id,
                     name=tool_name,
                 ))

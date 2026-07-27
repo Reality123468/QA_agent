@@ -14,6 +14,6 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    type: str  # thinking / answer / citation / thought / action / observation / done / error
+    type: str  # thinking / answer / citation / thought / action / observation / downgrade / done / error
     content: str
     data: Optional[dict] = None

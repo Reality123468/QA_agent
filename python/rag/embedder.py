@@ -1,23 +1,25 @@
 import logging
 import os
+import sys
 from typing import List
 
 logger = logging.getLogger(__name__)
 
-# Read API key/URL from env for OpenAI-compatible fallback
+# Add D drive packages to path for portable installs
+_D_PACKAGES = "D:/python-packages"
+if os.path.isdir(_D_PACKAGES) and _D_PACKAGES not in sys.path:
+    sys.path.insert(0, _D_PACKAGES)
+
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
 
 _embedder = None
-_provider = None  # "deepseek", "huggingface", "sklearn"
+_provider = None  # "bge-m3", "deepseek", "huggingface", "sklearn"
+_vector_size = None
 
 
 class SklearnHashEmbedder:
-    """
-    A lightweight embedding fallback using sklearn's HashingVectorizer.
-    Produces deterministic, fixed-size vectors without any model download.
-    Does NOT require fitting — stateless and always produces the same dimension.
-    """
+    """Stateless fallback embedder using sklearn HashingVectorizer (384-dim)."""
 
     def __init__(self, n_features: int = 384):
         from sklearn.feature_extraction.text import HashingVectorizer
@@ -31,28 +33,62 @@ class SklearnHashEmbedder:
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         m = self._vectorizer.transform(texts)
-        # Convert sparse CSR matrix rows to dense float lists
         return [m[i].toarray()[0].tolist() for i in range(m.shape[0])]
 
     def embed_query(self, text: str) -> List[float]:
         return self.embed_documents([text])[0]
 
 
+class BGE_M3_Embedder:
+    """Wraps sentence-transformers BGE-M3 to expose embed_documents / embed_query."""
+
+    def __init__(self):
+        from sentence_transformers import SentenceTransformer
+        self._model = SentenceTransformer("BAAI/bge-m3", device="cpu")
+        self._dim = self._model.get_embedding_dimension()
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self._model.encode(
+            texts, normalize_embeddings=True, show_progress_bar=False
+        ).tolist()
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._model.encode(
+            [text], normalize_embeddings=True, show_progress_bar=False
+        )[0].tolist()
+
+
 def get_embedder():
     """
     Return an embedder instance with embed_documents() and embed_query() methods.
 
-    Strategy (tried in order):
-      1. DeepSeek API via OpenAIEmbeddings — fails at call time (no /embeddings endpoint).
-      2. Local HuggingFace sentence-transformer — may fail on first download.
-      3. Sklearn HashingVectorizer — guaranteed to work with no external deps.
+    Fallback chain (first successful init wins):
+      1. BGE-M3 local (1024-dim) — best Chinese semantic quality, zero cost
+      2. DeepSeek API via OpenAIEmbeddings (1536-dim) — requires valid API key
+      3. HuggingFace all-MiniLM-L6-v2 (384-dim) — lightweight local fallback
+      4. sklearn HashingVectorizer (384-dim) — guaranteed, no dependencies
     """
-    global _embedder, _provider
+    global _embedder, _provider, _vector_size
 
     if _embedder is not None:
         return _embedder
 
-    # Attempt 1: DeepSeek via OpenAI-compatible embeddings
+    # Attempt 1: BGE-M3 (local, 1024-dim)
+    try:
+        e = BGE_M3_Embedder()
+        _embedder = e
+        _provider = "bge-m3"
+        _vector_size = e.dim
+        logger.info("Embedder initialized: BGE-M3 (BAAI/bge-m3, dim=%d)", e.dim)
+        return _embedder
+    except Exception as e:
+        logger.warning("BGE-M3 init failed: %s", e)
+
+    # Attempt 2: DeepSeek API via OpenAIEmbeddings
     try:
         from langchain_openai import OpenAIEmbeddings
 
@@ -61,16 +97,16 @@ def get_embedder():
             api_key=DEEPSEEK_API_KEY,
             base_url=DEEPSEEK_API_URL,
         )
-        # Test the embedder with a real API call to verify it works
         test_embedder.embed_query("test")
         _embedder = test_embedder
         _provider = "deepseek"
-        logger.info("Embedder initialized: DeepSeek API via OpenAIEmbeddings (model=deepseek-chat)")
+        _vector_size = 1536
+        logger.info("Embedder initialized: DeepSeek API (dim=1536)")
         return _embedder
     except Exception as e:
-        logger.warning(f"DeepSeek OpenAIEmbeddings init failed: {e}")
+        logger.warning("DeepSeek OpenAIEmbeddings init failed: %s", e)
 
-    # Attempt 2: Local HuggingFace sentence-transformer
+    # Attempt 3: HuggingFace all-MiniLM-L6-v2
     try:
         from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -80,54 +116,49 @@ def get_embedder():
             encode_kwargs={"normalize_embeddings": True},
         )
         _provider = "huggingface"
-        logger.info("Embedder initialized: local HuggingFace model (all-MiniLM-L6-v2, dim=384)")
+        _vector_size = 384
+        logger.info("Embedder initialized: HuggingFace all-MiniLM-L6-v2 (dim=384)")
         return _embedder
     except Exception as e:
-        logger.warning(f"HuggingFace embedder init failed: {e}")
+        logger.warning("HuggingFace embedder init failed: %s", e)
 
-    # Attempt 3: Sklearn HashingVectorizer (always works)
+    # Attempt 4: sklearn HashingVectorizer (guaranteed fallback)
     _embedder = SklearnHashEmbedder(n_features=384)
     _provider = "sklearn"
+    _vector_size = 384
     logger.info("Embedder initialized: sklearn HashingVectorizer (n_features=384)")
     return _embedder
 
 
 def _fallback_to_sklearn():
-    """Force embedder to fall back to sklearn HashingVectorizer."""
-    global _embedder, _provider
+    global _embedder, _provider, _vector_size
     _embedder = SklearnHashEmbedder(n_features=384)
     _provider = "sklearn"
+    _vector_size = 384
     logger.info("Embedder fallen back to: sklearn HashingVectorizer (n_features=384)")
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """将文本列表转换为向量（含自动回退）"""
     embedder = get_embedder()
     try:
         return embedder.embed_documents(texts)
     except Exception as e:
-        logger.warning(f"Embedder.embed_documents() failed ({e}), falling back to sklearn")
+        logger.warning("Embedder.embed_documents() failed (%s), falling back to sklearn", e)
         _fallback_to_sklearn()
-        embedder = get_embedder()
-        return embedder.embed_documents(texts)
+        return get_embedder().embed_documents(texts)
 
 
 def embed_query(query: str) -> List[float]:
-    """将查询文本转换为向量（含自动回退）"""
     embedder = get_embedder()
     try:
         return embedder.embed_query(query)
     except Exception as e:
-        logger.warning(f"Embedder.embed_query() failed ({e}), falling back to sklearn")
+        logger.warning("Embedder.embed_query() failed (%s), falling back to sklearn", e)
         _fallback_to_sklearn()
-        embedder = get_embedder()
-        return embedder.embed_query(query)
+        return get_embedder().embed_query(query)
 
 
 def get_vector_size() -> int:
-    """Return the dimensionality of the current embedder."""
+    """Return the dimensionality of the current active embedder."""
     get_embedder()
-    if _provider == "deepseek":
-        return 1536  # DeepSeek / OpenAI ada-002 class
-    else:
-        return 384  # all-MiniLM-L6-v2 / HashingVectorizer
+    return _vector_size or 384

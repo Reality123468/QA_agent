@@ -3,7 +3,8 @@ import asyncio
 import logging
 from typing import List, AsyncGenerator
 from rag.retriever import hybrid_search
-from llm.deepseek_client import chat_stream
+from rag.reranker import rerank_listwise
+from llm.deepseek_client import chat_stream, count_tokens, TOKEN_BUDGET
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +36,21 @@ async def answer_with_rag(question: str, history: List[dict] = None,
     # Step 1: 思考提示
     yield f"data: {json.dumps({'type': 'thinking', 'content': '正在检索相关文档...'}, ensure_ascii=False)}\n\n"
 
-    # Step 2: 检索
-    hits = await asyncio.to_thread(hybrid_search, question, department=department, security_level=security_level)
+    # Step 2: 检索（Top-10 粗召回）
+    hits = await asyncio.to_thread(
+        hybrid_search, question, department=department, security_level=security_level, top_k=10
+    )
 
     if not hits:
         yield f"data: {json.dumps({'type': 'answer', 'content': '知识库中暂无相关信息，我无法准确回答该问题。'}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
         return
 
-    yield f"data: {json.dumps({'type': 'thinking', 'content': f'检索到 {len(hits)} 个相关片段，正在生成回答...'}, ensure_ascii=False)}\n\n"
+    # Step 2.5: Reranker 精排（10 → 5）
+    yield f"data: {json.dumps({'type': 'thinking', 'content': f'检索到 {len(hits)} 个候选片段，正在精选最相关内容...'}, ensure_ascii=False)}\n\n"
+    hits = await rerank_listwise(question, hits, top_n=5)
+
+    yield f"data: {json.dumps({'type': 'thinking', 'content': f'已精选 {len(hits)} 个相关片段，正在生成回答...'}, ensure_ascii=False)}\n\n"
 
     # Step 3: 构建上下文和 Prompt
     context = "\n\n---\n\n".join([
@@ -57,6 +64,23 @@ async def answer_with_rag(question: str, history: List[dict] = None,
     if history:
         messages = [{"role": "system", "content": prompt}] + history
     messages.append({"role": "user", "content": question})
+
+    # Token 预算检查：超限时裁剪 context 和历史
+    if count_tokens(messages) > TOKEN_BUDGET:
+        logger.info(f"[RAG] token budget exceeded, trimming context...")
+        # 裁剪历史（保留最近 4 条）和 context 片段
+        if history and len(history) > 4:
+            history = history[-4:]
+        # 减少 context 片段数
+        trimmed_context = "\n\n---\n\n".join([
+            f"[来源: {h['title']}] {h['text'][:500]}"
+            for h in hits[:3]
+        ])
+        prompt = RAG_PROMPT_TEMPLATE.format(context=trimmed_context, question=question)
+        messages = [{"role": "system", "content": prompt}]
+        if history:
+            messages = [{"role": "system", "content": prompt}] + history
+        messages.append({"role": "user", "content": question})
 
     # Step 4: 流式生成
     full_answer = ""

@@ -26,6 +26,9 @@ public class Message {
     @Column(name = "agent_steps", columnDefinition = "TEXT")
     private String agentSteps;
 
+    @Column(length = 20)
+    private String feedback;  // thumbs_up / thumbs_down / null
+
     @Column(nullable = false)
     private LocalDateTime timestamp;
 
@@ -48,6 +51,8 @@ public class Message {
     public void setCitations(String citations) { this.citations = citations; }
     public String getAgentSteps() { return agentSteps; }
     public void setAgentSteps(String agentSteps) { this.agentSteps = agentSteps; }
+    public String getFeedback() { return feedback; }
+    public void setFeedback(String feedback) { this.feedback = feedback; }
     public LocalDateTime getTimestamp() { return timestamp; }
     public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
 }

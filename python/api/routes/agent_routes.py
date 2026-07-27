@@ -1,5 +1,6 @@
 import json
 import asyncio
+import time
 import logging
 
 from fastapi import APIRouter, Depends, Header
@@ -17,6 +18,8 @@ from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+AGENT_STREAM_TIMEOUT = 120  # Agent 整体推理超时（秒）
 
 
 @router.post("/index")
@@ -100,12 +103,16 @@ async def _search_only_stream(question: str, department: str, security_level: st
 
 
 async def _agent_stream(question: str, history: list, department: str, security_level: str):
-    """Agent 模式：ReAct 推理循环 + 流式输出
+    """Agent 模式：ReAct 推理循环 + 流式输出（含 3 级自动降级）
 
-    使用 graph.astream() 流式获取状态更新。从 agent 节点输出中提取
-    action（tool_calls）事件，从 tools 节点输出中提取 observation 事件，
-    并在流中直接捕获最终答案（无 tool_calls 的 AIMessage）。
+    降级链路：
+    1. Agent 异常/超时 → RAG 模式
+    2. RAG 检索失败 → search-only 模式
+    3. 全部失败 → 兜底回复
     """
+    agent_failed = False
+
+    # ── Tier 1: Agent ReAct 推理 ──
     try:
         graph = get_agent_graph()
 
@@ -123,17 +130,21 @@ async def _agent_stream(question: str, history: list, department: str, security_
 
         yield f"data: {json.dumps({'type': 'thought', 'content': '正在分析问题...'}, ensure_ascii=False)}\n\n"
 
+        start_time = time.time()
         final_answer = ""
         msg_count = 0
         async for chunk in graph.astream(initial_state, config=config, stream_mode="values"):
+            elapsed = time.time() - start_time
+            if elapsed > AGENT_STREAM_TIMEOUT:
+                logger.warning(f"[_agent_stream] Timed out after {elapsed:.0f}s")
+                agent_failed = True
+                break
             msgs = chunk.get("messages", [])
             if len(msgs) <= msg_count:
                 continue
-            # 只处理新增的消息
             new_msgs = msgs[msg_count:]
             msg_count = len(msgs)
             for msg in new_msgs:
-                # 检查 AIMessage 是否有 tool_calls → yield action 事件
                 tool_calls = getattr(msg, "tool_calls", None)
                 if tool_calls:
                     for tc in tool_calls:
@@ -142,28 +153,56 @@ async def _agent_stream(question: str, history: list, department: str, security_
                         yield f"data: {json.dumps({'type': 'action', 'content': f'执行: {tc_name}', 'data': {'tool': tc_name, 'args': tc_args}}, ensure_ascii=False)}\n\n"
                     continue
 
-                # 检查 ToolMessage → yield observation 事件
                 is_tool_msg = hasattr(msg, "tool_call_id") and getattr(msg, "tool_call_id", None)
                 if is_tool_msg:
                     preview = str(msg.content)[:200] + ("..." if len(str(msg.content)) > 200 else "")
                     yield f"data: {json.dumps({'type': 'observation', 'content': preview}, ensure_ascii=False)}\n\n"
                     continue
 
-                # AIMessage 无 tool_calls → 最终答案（取最后一个）
                 content = getattr(msg, "content", None)
                 if content:
                     final_answer = content
 
-        if final_answer:
+        if not agent_failed and final_answer:
             for char in final_answer:
                 yield f"data: {json.dumps({'type': 'answer', 'content': char}, ensure_ascii=False)}\n\n"
-        else:
-            logger.warning(f"[_agent_stream] No final answer captured. Total msgs: {msg_count}")
-            yield f"data: {json.dumps({'type': 'answer', 'content': '抱歉，我无法回答该问题。'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
+            return
 
-        yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
+        agent_failed = True
 
     except Exception as e:
         logger.error(f"Agent stream error: {e}", exc_info=True)
-        yield f"data: {json.dumps({'type': 'error', 'content': f'Agent 推理失败: {str(e)}'}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
+        agent_failed = True
+
+    # ── Tier 2: 降级到 RAG 模式 ──
+    if agent_failed:
+        yield f"data: {json.dumps({'type': 'downgrade', 'content': 'Agent 不可用，切换到知识库检索模式', 'data': {'from': 'agent', 'to': 'rag'}}, ensure_ascii=False)}\n\n"
+        try:
+            has_any_output = False
+            async for sse in answer_with_rag(
+                question=question, history=history,
+                department=department, security_level=security_level,
+            ):
+                has_any_output = True
+                yield sse
+            if has_any_output:
+                return
+        except Exception as e:
+            logger.error(f"RAG downgrade also failed: {e}", exc_info=True)
+
+    # ── Tier 3: 降级到 search-only 模式 ──
+    yield f"data: {json.dumps({'type': 'downgrade', 'content': 'AI 服务不可用，返回关键词检索结果', 'data': {'from': 'rag', 'to': 'search-only'}}, ensure_ascii=False)}\n\n"
+    try:
+        has_results = False
+        async for sse in _search_only_stream(question, department, security_level):
+            has_results = True
+            yield sse
+        if has_results:
+            return
+    except Exception as e:
+        logger.error(f"search-only downgrade also failed: {e}", exc_info=True)
+
+    # ── Tier 4: 兜底回复 ──
+    yield f"data: {json.dumps({'type': 'answer', 'content': '系统暂时无法处理您的问题，请稍后重试或联系管理员。'}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"

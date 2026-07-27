@@ -8,6 +8,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/chat/conversations")
@@ -37,6 +38,16 @@ public class ConversationController {
     public ApiResult<Void> deleteConversation(@PathVariable Long id, Authentication auth) {
         Long userId = (Long) auth.getDetails();
         conversationService.deleteConversation(id, userId);
+        return ApiResult.success(null);
+    }
+
+    @PostMapping("/messages/{id}/feedback")
+    public ApiResult<Void> submitFeedback(@PathVariable Long id,
+                                           @RequestBody Map<String, String> body,
+                                           Authentication auth) {
+        Long userId = (Long) auth.getDetails();
+        String feedback = body.get("feedback");
+        conversationService.submitFeedback(id, userId, feedback);
         return ApiResult.success(null);
     }
 }

@@ -9,4 +9,5 @@ public interface ConversationService {
     List<ConversationDto> listConversations(Long userId);
     List<MessageDto> getMessages(Long conversationId, Long userId);
     void deleteConversation(Long conversationId, Long userId);
+    void submitFeedback(Long messageId, Long userId, String feedback);
 }

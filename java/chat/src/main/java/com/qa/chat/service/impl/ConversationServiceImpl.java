@@ -74,11 +74,33 @@ public class ConversationServiceImpl implements ConversationService {
         log.info("Conversation {} deleted by user {}", conversationId, userId);
     }
 
+    @Override
+    @Transactional
+    public void submitFeedback(Long messageId, Long userId, String feedback) {
+        if (!"thumbs_up".equals(feedback) && !"thumbs_down".equals(feedback)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "feedback 必须为 thumbs_up 或 thumbs_down");
+        }
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "消息不存在"));
+
+        // 验证该消息属于该用户的会话
+        Conversation conv = conversationRepository.findById(message.getConversationId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "会话不存在"));
+        if (!conv.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "无权操作该消息");
+        }
+
+        message.setFeedback(feedback);
+        messageRepository.save(message);
+        log.info("Message {} feedback set to {} by user {}", messageId, feedback, userId);
+    }
+
     private MessageDto toDto(Message msg) {
         MessageDto dto = new MessageDto();
         dto.setId(msg.getId());
         dto.setRole(msg.getRole());
         dto.setContent(msg.getContent());
+        dto.setFeedback(msg.getFeedback());
         dto.setTimestamp(msg.getTimestamp());
 
         try {

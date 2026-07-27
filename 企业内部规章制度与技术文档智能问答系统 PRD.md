@@ -1,7 +1,7 @@
 # 企业内部规章制度与技术文档智能问答系统 — 产品需求文档（PRD）
 
-**文档版本**：v4.0
-**编制日期**：2026-07-20
+**文档版本**：v4.1
+**编制日期**：2026-07-25
 **项目类型**：实习项目 / 简历项目
 **技术路线**：Java SpringBoot（业务主体）+ Python LangChain Agent（AI智能体）
 
@@ -14,6 +14,7 @@
 | v2.0 | 2026-07-20 | 修订（Python LangChain方案） | — |
 | v3.0 | 2026-07-20 | 定稿（Java主体 + Python Agent混合架构） | — |
 | v4.0 | 2026-07-20 | 架构精简、补充RAG分块策略与ACL实现、新增评估与容错体系 | — |
+| v4.1 | 2026-07-25 | 根据实际实现更新：模型名 deepseek-v4-pro、版本号修正、SSE 格式对齐、移除未实现组件（BM25/Reranker/Redis） | — |
 
 
 ## 二、项目概述
@@ -63,11 +64,11 @@
 
 | 类别 | 要求 |
 |------|------|
-| **性能** | 普通问答响应时间 < 3s（不含LLM生成）；Agent推理总耗时 < 15s |
-| **可用性** | 支持Docker Compose一键部署，服务异常自动重启 |
-| **可扩展性** | Java与Python服务独立部署，支持水平扩展 |
-| **安全性** | JWT认证 + RBAC权限控制；敏感数据脱敏后传输 |
-| **可维护性** | 提供结构化日志；Python侧集成LangSmith可观测性 |
+| **性能** | Agent LLM 调用 30s 超时，单工具 15s 超时，整体推理 120s 超时 |
+| **可用性** | Docker Compose 6 容器一键部署，含健康检查和依赖顺序 |
+| **可扩展性** | Java 7 Maven 模块 + Python 服务独立部署，通过 HTTP + API Key 解耦 |
+| **安全性** | JWT 认证 + RBAC（4 种角色）；Python 内部 API Key 服务间认证；Qdrant 检索时权限过滤 |
+| **可维护性** | 结构化日志 + LangSmith 可观测性（可选） |
 
 
 ## 三、架构设计
@@ -128,15 +129,15 @@
 │                                    │                                       │
 │  ┌────────────────────────────────────────────────────────────────────┐    │
 │  │                    RAG检索模块                                     │    │
-│  │  混合检索(Qdrant 向量 + BM25) → Rerank → LCEL流水线              │    │
+│  │  混合检索(Qdrant 向量语义检索 + 权限过滤) → Prompt工程 → LLM流式生成  │    │
 │  └────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              存储层                                         │
 │  ┌──────────┐ ┌──────────────────────┐ ┌──────────┐ ┌──────────┐        │
-│  │  MySQL   │ │  Qdrant (向量+BM25)  │ │  MinIO   │ │  Redis   │        │
-│  │(用户/审计)│ │  (向量检索+关键词)   │ │(对象存储)│ │(会话缓存)│        │
+│  │  MySQL   │ │  Qdrant (向量检索)   │ │  MinIO   │ │          │        │
+│  │(用户/审计)│ │  (语义检索+权限过滤) │ │(对象存储)│ │          │        │
 │  └──────────┘ └──────────────────────┘ └──────────┘ └──────────┘        │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -149,7 +150,7 @@
 | **接入层** | 反向代理、负载均衡、静态资源服务 | Nginx |
 | **Java业务底座层** | 认证授权、文档管理、审计日志、请求路由 | Spring Boot 3.2.x |
 | **Python Agent层** | Agent推理、工具调用、RAG检索增强生成 | FastAPI 0.128.0 + LangChain 1.2.22 + LangGraph 1.0.7 |
-| **存储层** | 数据持久化与检索 | MySQL + Qdrant + MinIO + Redis（可选） |
+| **存储层** | 数据持久化与检索 | MySQL + Qdrant + MinIO |
 
 ### 3.3 Java + Python 混合架构决策
 
@@ -176,7 +177,7 @@
                                         ↓
                             TextSplitter分块 → Embedding向量化
                                         ↓
-                     存入Qdrant（同时写入稠密向量 + 稀疏向量用于BM25）
+                     存入Qdrant（向量 + payload 元数据：doc_id/title/department/security_level/chunk_index）
                                         ↓
                             更新MySQL文档状态 → WebSocket推送完成通知
 ```
@@ -235,7 +236,7 @@
 | **功能描述** | 文档上传后通过Spring @Async异步调用Python索引接口；任务状态管理；失败自动重试；通过WebSocket实时推送进度 |
 | **技术选型** | Spring @Async + FastAPI + WebSocket |
 | **选型理由** | RAG文档处理是IO密集型和计算密集型操作，必须异步化。@Async是Spring原生异步方案，降低了引入RabbitMQ的运维成本。WebSocket用于实时推送索引进度到前端 |
-| **接口设计** | `POST /api/documents/{id}/index` - 触发索引；`GET /api/documents/status/{id}` - 查询索引状态；WebSocket端点 `/ws/progress` - 进度推送 |
+| **接口设计** | `POST /api/documents/{id}/index` - 触发索引；WebSocket端点 `/ws/index-progress` - 进度推送 |
 
 ### 4.4 文档分块策略（Python RAG层）
 
@@ -243,10 +244,12 @@
 
 | 文档类型 | 分块器 | chunk_size | overlap | 特殊处理 |
 |----------|--------|-----------|---------|---------|
-| **规章制度 (Markdown)** | MarkdownHeaderTextSplitter | 512 tokens | 64 | 按 `##` 标题层级分割，保留章节结构 |
-| **技术文档 (PDF)** | RecursiveCharacterTextSplitter | 800 tokens | 100 | 使用PyMuPDF提取文本；表格区域用Unstructured库单独提取并转为Markdown表格 |
-| **纯文本 (TXT)** | RecursiveCharacterTextSplitter | 1024 tokens | 128 | 按段落 `\n\n` 优先分割 |
-| **Word (.docx)** | RecursiveCharacterTextSplitter | 800 tokens | 100 | 用python-docx提取，按段落和标题样式分割 |
+| **规章制度 (Markdown)** | MarkdownHeaderTextSplitter | 按 H2/H3 标题 | — | 按 `##`/`###` 标题层级分割，保留章节结构 |
+| **PDF** | RecursiveCharacterTextSplitter | 800 字符 | 150 字符 | 使用 PyMuPDF (fitz) 提取文本 |
+| **Word (.docx)** | RecursiveCharacterTextSplitter | 800 字符 | 150 字符 | 使用 python-docx 提取，按段落分割 |
+| **纯文本 (TXT)** | RecursiveCharacterTextSplitter | 800 字符 | 150 字符 | 按段落优先分割 |
+
+> 注意：实际使用字符数（characters）而非 tokens 作为分块单位，overlap 统一为 150。
 
 **metadata 附加策略**：每个chunk入库时附加以下元数据，用于权限过滤和溯源：
 
@@ -269,9 +272,9 @@
 | 项目 | 内容 |
 |------|------|
 | **功能描述** | ReAct推理循环；自主工具调用；多工具协同；最大迭代控制（`max_iterations=10`）；流式推理过程推送 |
-| **技术选型** | LangChain 1.2.22 + LangGraph 1.0.7 |
-| **选型理由** | LangGraph是2026年构建Agent的标准框架，提供StateGraph显式状态管理、持久化执行（Checkpoint）和流式API。LangChain 1.2.22为当前稳定版，官方明确以LCEL + LangGraph作为构建Agent与RAG的主流范式 |
-| **接口设计** | `POST /api/agent/chat` - 对话（流式）；`POST /api/agent/chat/sync` - 对话（同步） |
+| **技术选型** | LangChain 1.2.22 + LangGraph 0.2.x |
+| **选型理由** | LangGraph 提供 StateGraph 显式状态管理、MemorySaver 持久化多轮对话状态和 astream() 流式 API。LangChain 1.2.22 为当前稳定版，工具装饰器 @tool 将函数转为 LLM 可调用工具 |
+| **接口设计** | `POST /api/agent/chat/stream` - SSE 流式对话（支持 rag/agent/search-only 三种 mode）；无独立同步端点 |
 
 **Agent系统提示词（核心）** ：
 
@@ -292,61 +295,66 @@
 | 工具名称 | 功能描述 | 触发场景 | 参数 |
 |----------|----------|----------|------|
 | `search_policy` | 检索企业内部规章制度，自动按用户部门过滤权限 | 用户问"年假有多少天" | `query: str`, `department: str` |
-| `search_doc` | 检索技术文档，按标签筛选 | 用户问"登录接口怎么调用" | `query: str`, `tags: List[str]` |
-| `search_employee` | 查询员工组织架构、角色和联系方式 | 用户问"技术部负责人是谁" | `query: str` |
-| `get_doc_detail` | 获取指定文档的完整内容（当检索片段不够时使用） | Agent判断需要查看完整文档 | `doc_id: str` |
+| `search_doc` | 检索技术文档，将 tags 拼接到 query 中增强语义匹配 | 用户问"登录接口怎么调用" | `query: str`, `tags: Optional[str]` |
+| `search_employee` | 检索企业文档中与组织架构/人员相关的内容 | 用户问"技术部负责人是谁" | `query: str` |
+| `get_doc_detail` | 获取指定文档的完整内容（用 Qdrant scroll 按 doc_id 查询所有 chunks，最多 20 段） | Agent 判断需要查看完整文档 | `doc_id: int` |
 
 **技术选型**：LangChain `@tool` 装饰器 + Pydantic参数校验
 
 **选型理由**：`@tool`装饰器将普通Python函数转化为LangChain可识别的工具，函数的docstring自动成为工具描述。Pydantic提供参数类型校验和自动生成JSON Schema。4个工具覆盖了企业内知识检索的核心场景，每个工具背后有真实数据源支撑。
 
-**代码示例**：
+**代码示例**（`python/agent/tools.py`）：
 
 ```python
-from langchain.tools import tool
-from pydantic import BaseModel, Field
+from langchain_core.tools import tool
+from rag.retriever import hybrid_search, get_document_chunks
 
-class PolicySearchInput(BaseModel):
-    query: str = Field(description="搜索关键词，如'年假'、'报销'")
-    department: str = Field(default="全部", description="部门名称，用于权限过滤")
-
-@tool(args_schema=PolicySearchInput)
+@tool
 def search_policy(query: str, department: str = "全部") -> str:
-    """检索企业内部规章制度，包括员工手册、财务制度、考勤政策等"""
-    # 构建Qdrant过滤条件：仅检索当前用户有权查看的文档
-    # 调用RAG检索模块
-    return result
+    """检索企业内部规章制度，包括员工手册、财务制度、考勤政策、报销流程等。"""
+    hits = hybrid_search(query, department=department, security_level="内部", top_k=5)
+    if not hits:
+        return "未找到相关规章制度。"
+    return _format_hits(hits)
+
+@tool
+def get_doc_detail(doc_id: int) -> str:
+    """获取指定文档的完整详细内容。"""
+    chunks = get_document_chunks(doc_id)
+    if not chunks:
+        return f"未找到文档 ID={doc_id} 的内容，文档可能已被删除。"
+    title = chunks[0].get("title", "未知文档")
+    full_text = "\n\n".join([c["text"] for c in chunks])
+    return f"文档《{title}》完整内容（共 {len(chunks)} 段）：\n\n{full_text[:3000]}"
 ```
 
 ### 4.7 混合检索与RAG（Python层）
 
 | 项目 | 内容 |
 |------|------|
-| **功能描述** | 双路召回（BM25关键词 + 向量语义检索）；RRF融合排序；检索权限过滤；重排序（Rerank） |
-| **技术选型** | LangChain EnsembleRetriever + Qdrant 1.7+（向量检索 + BM25）+ BGE-Reranker |
-| **选型理由** | Qdrant v1.10+ 原生支持稠密向量 + 稀疏向量（BM25）双索引，无需额外部署Elasticsearch，大幅降低运维复杂度。BGE-Reranker在中文场景表现优异，本地部署零成本 |
-| **检索流程** | 用户Query → 构建权限过滤条件 → 并行BM25+向量双路检索 → RRF融合 → BGE-Reranker精排 → Top-N送入LLM |
+| **功能描述** | 向量语义检索；检索权限过滤（部门 + 密级）；Embedding 三级降级策略 |
+| **技术选型** | Qdrant 1.12+ 向量检索 + DeepSeek Embedding API / HuggingFace 本地模型 / sklearn HashingVectorizer |
+| **选型理由** | Qdrant 提供高性能向量检索，Cosine 相似度 + 权限过滤。Embedding 三层降级保证系统在任何环境下可运行：API 1536-dim → 本地 384-dim → 零依赖 384-dim |
+| **检索流程** | 用户 Query → Embedding 向量化（三级降级） → Qdrant 向量检索（Cosine 相似度 + department/security_level 权限过滤） → Top-N 送入 LLM |
 
 #### 4.7.1 权限过滤在向量检索中的实现
 
 RAG中的权限过滤是公认的技术难点。本方案采用**检索前过滤（Pre-filtering）**策略：
 
 ```
-Qdrant 检索请求示例：
-{
-  "vector": [0.12, -0.34, ...],        // 用户query的embedding向量
-  "sparse_vector": {                     // BM25稀疏向量
-    "indices": [15, 23, 87, ...],
-    "values": [0.8, 0.3, 0.6, ...]
-  },
-  "filter": {                            // 权限过滤条件
-    "must": [
-      {"key": "department", "match": {"any": ["技术部", "全部"}}},
-      {"key": "security_level", "match": {"except": ["机密"]}}
-    ]
-  },
-  "limit": 20
-}
+Qdrant 检索请求示例（Python qdrant_client）：
+query_points(
+    collection_name="qa_documents",
+    query=query_vector,                    # 用户 query 的 embedding 向量
+    query_filter=Filter(
+        must=[
+            FieldCondition(key="department", match=MatchAny(any=["技术部", "全部"])),
+            FieldCondition(key="security_level", match=MatchExcept(except=["机密"])),
+        ]
+    ),
+    limit=10,
+    with_payload=True,
+)
 ```
 
 - 每个chunk入库时携带 `department` 和 `security_level` 的payload
@@ -354,35 +362,43 @@ Qdrant 检索请求示例：
 - 过滤发生在检索之前，保证用户只能召回有权限的文档片段
 - 当用户角色为 `ROLE_LEADER` 或以上时，"机密"文档方可被检索
 
-### 4.8 LCEL流水线编排（Python层）
+### 4.8 RAG 问答流水线（Python层）
 
 | 项目 | 内容 |
 |------|------|
-| **功能描述** | 使用LangChain Expression Language编排RAG流水线；支持同步/异步调用与流式输出 |
-| **技术选型** | LangChain LCEL（RunnableSequence / RunnableParallel） |
-| **选型理由** | LCEL通过 `|` 操作符将组件串联为清晰流水线；RunnableParallel支持并行执行多个检索器 |
+| **功能描述** | Prompt 工程驱动的 RAG 流水线：检索 → 构建上下文 → LLM 流式生成 → 引用溯源 |
+| **技术选型** | 直接调用 `hybrid_search()` + `chat_stream()`，Prompt 模板约束反幻觉 |
+| **选型理由** | 简洁直接的实现，避免 LCEL 过度抽象。Prompt 工程要求 LLM 仅根据参考文档回答，找不到信息时明确告知 |
 
-**代码示例**：
+**RAG Prompt 模板**（`python/llm/rag_chain.py`）：
 
 ```python
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+RAG_PROMPT_TEMPLATE = """你是一名企业智能助手。请根据以下参考文档中的信息回答用户问题。
 
-rag_chain = (
-    {"context": retriever | reranker, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | output_parser
-)
+## 要求
+- 仅根据参考文档内容回答，不要编造信息
+- 如果参考文档中没有相关信息，明确告知用户"该问题我目前无法准确回答"
+- 回答中引用具体的文档名称和章节
+- 回答准确、简洁、专业
+
+## 参考文档
+{context}
+
+## 用户问题
+{question}
+
+## 回答
+"""
 ```
 
 ### 4.9 流式对话（Java层 + Python层协同）
 
 | 项目 | 内容 |
 |------|------|
-| **功能描述** | Java通过WebClient调用Python Agent的流式接口；Python返回SSE流；Java透传SSE流给前端；Agent推理过程流式展示 |
-| **技术选型** | FastAPI StreamingResponse + Spring WebFlux WebClient + SSE |
-| **选型理由** | FastAPI的StreamingResponse原生支持SSE流式输出；WebClient是Spring响应式HTTP客户端，支持流式数据消费；Feign不支持流式消费 |
-| **接口设计** | `POST /api/chat/stream` - SSE流式对话（Java透传） |
+| **功能描述** | Java 通过 WebClient 调用 Python SSE 流式接口；三种对话模式切换（rag/agent/search-only）；Python 返回 8 种 SSE 事件；Java 透传给前端 |
+| **技术选型** | FastAPI StreamingResponse + Spring WebFlux WebClient + fetch ReadableStream（前端手动解析） |
+| **选型理由** | FastAPI StreamingResponse 原生支持 SSE；WebClient 支持流式消费；前端用 fetch + ReadableStream 替代 EventSource（后者仅支持 GET，无法携带请求体） |
+| **接口设计** | `POST /api/chat/stream` - SSE 流式对话，请求体含 `question`/`history`/`mode`/`conversationId` |
 
 ### 4.10 审计日志（Java层）
 
@@ -449,11 +465,12 @@ AI系统的质量不能仅凭主观感受判断，需要建立可量化的评估
 | 故障场景 | 处理策略 | 用户看到的效果 |
 |----------|----------|---------------|
 | Python Agent 服务不可用 | Java检测连接失败，立即返回降级响应 | "AI服务暂时繁忙，请稍后重试" + 记录告警日志 |
-| LLM API 调用超时（>30s） | WebClient设置60s读取超时，Agent侧30s超时自动中断 | 返回已输出的部分内容 + "回答被中断，请简化问题重试" |
-| LLM API 限流/配额耗尽 | 捕获429状态码，3次指数退避重试（1s/2s/4s） | 重试用尽后提示"服务请求过多，请稍后再试" |
-| Qdrant 不可用 | 检索异常被Agent捕获 | "知识库暂时无法访问，请联系管理员" |
-| 文档解析失败（PDF损坏/乱码） | Python侧捕获异常，标记文档状态为FAILED | 前端显示"索引失败：文件解析异常" + 失败原因 |
-| Agent 超过最大迭代次数 | LangGraph `max_iterations=10` 触发中断 | 返回"该问题过于复杂，我暂时无法回答，建议拆分为多个简单问题" |
+| LLM API 调用超时（>30s） | AsyncOpenAI httpx.Timeout(30s) + agent_node asyncio.wait_for(30s) + _agent_stream 120s 整体超时 | 返回错误事件 "Agent 推理超时，请简化问题后重试" |
+| LLM API 限流/配额耗尽 | 捕获 HTTP 错误状态码，Agent 节点返回错误消息 | "AI 推理超时，请简化问题后重试" |
+| Qdrant 不可用 | hybrid_search 捕获异常返回空结果，不阻断流程 | 工具返回 "未找到相关信息" |
+| 文档解析失败（PDF损坏/乱码） | Python 侧捕获异常，标记文档状态为 FAILED | 前端显示 "索引失败：文件解析异常" + 失败原因 |
+| Agent 超过最大迭代次数 | LangGraph `recursion_limit=10` 触发中断 | 返回 "该问题过于复杂，我暂时无法回答" |
+| 工具执行超时 | tools_node asyncio.wait_for(15s) 单工具超时 | 工具返回 "工具执行超时，请稍后重试" |
 | Token超限（上下文过长） | 动态裁剪较早的对话轮次 + 减少检索Top-N | 用户无感知，确保不超出模型上下文窗口 |
 
 ### 6.2 降级层次
@@ -466,7 +483,7 @@ Level 2: 纯RAG模式 (跳过Agent，直接检索 + LLM生成)
 Level 3: 关键词搜索模式 (仅返回检索到的文档片段，不做生成)
 ```
 
-Java侧通过配置项 `agent.mode` (agent / rag / search-only) 控制当前运行的级别，可在不重启服务的情况下切换。
+三种模式通过 API 请求体 `mode` 字段按请求切换（`agent` / `rag` / `search-only`），前端下拉选择即可，无需重启服务。
 
 
 ## 七、技术栈总览
@@ -474,20 +491,18 @@ Java侧通过配置项 `agent.mode` (agent / rag / search-only) 控制当前运�
 | 层级 | 技术选型 | 版本 | 说明 |
 |------|----------|------|------|
 | **编程语言** | Java + Python | Java 21 / Python 3.11 | 双栈融合 |
-| **Java框架** | Spring Boot | 3.2.4+ | 企业级业务底座 |
-| **Java HTTP客户端** | Spring WebFlux WebClient | — | 支持SSE流式消费 |
-| **Python Web框架** | FastAPI | 0.128.0 | AI服务封装 |
-| **Python Agent框架** | LangChain + LangGraph | 1.2.22 / 1.0.7 | Agent核心 |
-| **LLM API** | DeepSeek-V3 | — | 国内合规、高性价比 |
-| **Embedding模型** | BGE-M3 / text-embedding-v3 | — | 中文语义向量，支持稀疏+稠密双表征 |
-| **Reranker模型** | BGE-Reranker-v2-m3 | — | 本地部署，二次精排 |
-| **向量数据库** | Qdrant | 1.10+ | 向量检索 + BM25双索引合一 |
-| **关系数据库** | MySQL | 8.0+ | 业务数据 |
-| **对象存储** | MinIO | RELEASE.2024+ | 文档存储 |
-| **缓存（可选）** | Redis | 7.0+ | 会话缓存，MVP阶段可省略 |
-| **前端** | Vue 3 + Element Plus | — | 管理后台 |
-| **可观测性** | LangSmith | — | Agent追踪 |
-| **容器化** | Docker + Docker Compose | — | 一键部署 |
+| **Java框架** | Spring Boot | 3.5.16 | 企业级业务底座（7 个 Maven 模块） |
+| **Java HTTP客户端** | Spring WebFlux WebClient | — | 支持 SSE 流式消费 |
+| **Python Web框架** | FastAPI | 0.128.0 | AI 服务封装 |
+| **Python Agent框架** | LangChain + LangGraph | 1.2.22 / 0.2.x | Agent 核心 |
+| **LLM API** | DeepSeek API（deepseek-v4-pro） | — | Chat + Embedding + Function Calling |
+| **Embedding 策略** | 三级降级：DeepSeek API (1536-dim) → HuggingFace all-MiniLM-L6-v2 (384-dim) → sklearn HashingVectorizer (384-dim) | — | 保证任何环境可运行 |
+| **向量数据库** | Qdrant | 1.12+ | 向量检索 + 权限过滤 |
+| **关系数据库** | MySQL | 8.0+ | 用户/文档/会话/审计 |
+| **对象存储** | MinIO | latest | 文档存储 |
+| **前端** | Vue 3 + Element Plus + Pinia + TypeScript | — | SPA 管理后台 + 问答界面 |
+| **可观测性** | LangSmith（可选） | — | Agent 追踪 |
+| **容器化** | Docker Compose（6 容器） | — | MySQL + Qdrant + MinIO + Python + Java + Nginx |
 
 
 ## 八、接口设计
@@ -502,18 +517,20 @@ Java侧通过配置项 `agent.mode` (agent / rag / search-only) 控制当前运�
 | `/api/documents` | GET | 文档列表 | 是 |
 | `/api/documents/{id}` | GET | 文档详情 | 是 |
 | `/api/documents/{id}` | DELETE | 删除文档 | 是 |
-| `/api/documents/{id}/index` | POST | 触发文档索引 | 是 |
-| `/api/chat/stream` | POST | SSE流式对话 | 是 |
-| `/api/chat/history` | GET | 对话历史 | 是 |
+| `/api/chat/stream` | POST | SSE 流式对话（含 mode 字段切换 rag/agent/search-only） | 是 |
+| `/api/chat/conversations` | GET | 当前用户会话列表 | 是 |
+| `/api/chat/conversations/{id}` | GET | 会话消息详情 | 是 |
+| `/api/chat/conversations/{id}` | DELETE | 删除会话 | 是 |
 | `/api/audit/logs` | GET | 审计日志（管理员） | 是 |
+| `/ws/index-progress` | WS | 索引进度实时推送 | 是（URL 参数 token） |
 
 ### 8.2 Python Agent接口（内部）
 
 | 接口 | 方法 | 说明 | 认证 |
 |------|------|------|------|
-| `/api/agent/chat` | POST | 对话（流式SSE） | 内部API Key |
-| `/api/agent/chat/sync` | POST | 对话（同步） | 内部API Key |
-| `/api/agent/index` | POST | 文档索引 | 内部API Key |
+| `/api/agent/chat/stream` | POST | SSE 流式对话（支持 rag/agent/search-only 三种 mode） | 内部 API Key |
+| `/api/agent/index` | POST | 文档索引 | 内部 API Key |
+| `/api/agent/index/{doc_id}` | DELETE | 删除文档向量 | 内部 API Key |
 | `/api/agent/health` | GET | 健康检查 | 否 |
 
 ### 8.3 Java调用Python协议
@@ -534,6 +551,7 @@ Java侧通过配置项 `agent.mode` (agent / rag / search-only) 控制当前运�
 ```json
 {
   "question": "我下个月想休年假，项目交付来得及吗？",
+  "mode": "agent",
   "history": [
     {"role": "user", "content": "..."},
     {"role": "assistant", "content": "..."}
@@ -541,21 +559,40 @@ Java侧通过配置项 `agent.mode` (agent / rag / search-only) 控制当前运�
 }
 ```
 
-**响应（SSE流）** ：
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `question` | string | 是 | 用户当前问题 |
+| `mode` | string | 否 | 对话模式：`rag`（默认）/ `agent` / `search-only` |
+| `history` | array | 否 | 历史对话上下文（空数组 `[]`，不可为 null） |
+
+**响应（SSE流，8 种事件类型）** ：
 
 ```
-event: thought
-data: {"content": "用户想休年假，需要先查政策"}
+data: {"type":"thought","content":"正在分析问题..."}
 
-event: action
-data: {"tool": "search_policy", "args": {"query": "年假天数"}}
+data: {"type":"action","content":"执行: search_policy","data":{"tool":"search_policy","args":{"query":"年假天数"}}}
 
-event: observation
-data: {"content": "入职满1年享5天年假"}
+data: {"type":"observation","content":"入职满1年享5天年假"}
 
-event: final
-data: {"answer": "...", "citations": [...]}
+data: {"type":"answer","content":"根据查询结果，您享有5天带薪年假..."}
+
+data: {"type":"citation","content":"员工手册 v3.2","data":{"title":"员工手册 v3.2","heading":"第三章 休假制度"}}
+
+data: {"type":"done","content":""}
 ```
+
+| SSE type | 说明 |
+|----------|------|
+| `thinking` | RAG 检索步骤（仅 rag 模式） |
+| `answer` | LLM 回答内容（逐 token 流式） |
+| `citation` | 溯源引用文档 |
+| `thought` | Agent 开始推理 |
+| `action` | Agent 工具调用（含 tool + args） |
+| `observation` | Agent 工具返回结果（前200字符） |
+| `done` | 流结束 |
+| `error` | 异常中断 |
+
+> 注意：实际 SSE 格式仅有 `data:` 行，无 `event:` 前缀。EventSource 不兼容 POST 请求，前端使用 fetch + ReadableStream 手动解析。
 
 
 ## 九、数据库设计
@@ -590,7 +627,29 @@ data: {"answer": "...", "citations": [...]}
 | `created_at` | DATETIME | 创建时间 |
 | `updated_at` | DATETIME | 更新时间 |
 
-### 9.3 审计日志表（`audit_log`）
+### 9.3 会话表（`conversation`）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | BIGINT | 主键 |
+| `user_id` | BIGINT | 用户 ID |
+| `title` | VARCHAR(200) | 会话标题 |
+| `created_at` | DATETIME | 创建时间 |
+| `updated_at` | DATETIME | 最后活跃时间 |
+
+### 9.4 消息表（`chat_message`）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | BIGINT | 主键 |
+| `conversation_id` | BIGINT | 所属会话 ID |
+| `role` | VARCHAR(20) | 角色（user/assistant） |
+| `content` | TEXT | 消息内容 |
+| `citations` | TEXT (JSON) | 引用来源 |
+| `agent_steps` | TEXT (JSON) | Agent 推理步骤 |
+| `timestamp` | DATETIME | 消息时间 |
+
+### 9.5 审计日志表（`audit_log`）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -610,29 +669,26 @@ data: {"answer": "...", "citations": [...]}
 
 | 服务 | 镜像 | 端口 | 说明 |
 |------|------|------|------|
-| `java-app` | 自定义（Spring Boot） | 8080 | 业务底座 |
-| `python-agent` | 自定义（FastAPI） | 8000 | AI Agent服务 |
-| `mysql` | mysql:8.0 | 3306 | 业务数据库 |
-| `qdrant` | qdrant/qdrant:latest | 6333 | 向量检索 + BM25 |
-| `minio` | minio/minio:latest | 9000 | 文档对象存储 |
-| `redis` | redis:7.0 | 6379 | 会话缓存（可选，MVP可省略） |
-| `nginx` | nginx:latest | 80 | 反向代理 + 静态资源 |
+| `java-app` | 自定义（Spring Boot 多模块） | 8080-8083 | 4 个业务模块（auth/document/chat/audit） |
+| `python-agent` | 自定义（FastAPI + Poetry） | 8000 | AI Agent 服务 |
+| `mysql` | mysql:8.0 | 3306 | 业务数据库（用户/文档/会话/审计） |
+| `qdrant` | qdrant/qdrant:latest | 6333 | 向量检索 + 权限过滤 |
+| `minio` | minio/minio:latest | 9000/9001 | 文档对象存储 / 管理控制台 |
+| `nginx` | nginx:latest（多阶段构建含 Vue 前端） | 80 | 反向代理 + 静态资源服务 |
 
 ### 10.2 环境变量配置
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `JAVA_APP_PORT` | Java服务端口 | 8080 |
-| `PYTHON_AGENT_URL` | Python Agent地址 | http://python-agent:8000 |
-| `AGENT_INTERNAL_API_KEY` | Python服务内部认证密钥 | 随机生成 |
-| `LLM_API_KEY` | 大模型API密钥 | sk-xxx |
-| `LLM_MODEL` | 模型名称 | deepseek-chat |
-| `EMBEDDING_MODEL` | Embedding模型 | BAAI/bge-m3 |
-| `RERANKER_MODEL` | Reranker模型 | BAAI/bge-reranker-v2-m3 |
-| `MYSQL_*` | MySQL配置 | — |
-| `QDRANT_*` | Qdrant配置 | — |
-| `MINIO_*` | MinIO配置 | — |
-| `REDIS_*` | Redis配置（可选） | — |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | sk-xxx |
+| `DEEPSEEK_API_URL` | DeepSeek API 地址 | https://api.deepseek.com |
+| `AGENT_API_KEY` | Python 服务内部认证密钥 | qa-agent-internal-api-key-2026 |
+| `AGENT_BASE_URL` | Python Agent 地址 | http://python-agent:8000 |
+| `JWT_SECRET` | JWT 签名密钥 | 随机 256 位密钥 |
+| `MYSQL_*` | MySQL 配置 | root/admin123456 |
+| `QDRANT_HOST` / `QDRANT_PORT` | Qdrant 配置 | qdrant/6333 |
+| `MINIO_*` | MinIO 配置 | admin/admin123456 |
+| `NGINX_PORT` | Nginx 端口 | 80 |
 
 
 ## 十一、项目里程碑

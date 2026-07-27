@@ -3,6 +3,7 @@ import os
 import logging
 from typing import Optional
 
+import httpx
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,11 @@ _client = None
 def get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_API_URL)
+        _client = AsyncOpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_API_URL,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
     return _client
 
 
@@ -61,7 +66,7 @@ def _to_api_messages(messages: list) -> list:
     return api_messages
 
 
-async def chat_stream(messages: list, model: str = "deepseek-chat", temperature: float = 0.3,
+async def chat_stream(messages: list, model: str = "deepseek-v4-pro", temperature: float = 0.3,
                       max_tokens: int = 2048):
     """流式调用 DeepSeek API，逐 token yield"""
     client = get_client()
@@ -78,7 +83,7 @@ async def chat_stream(messages: list, model: str = "deepseek-chat", temperature:
             yield chunk.choices[0].delta.content
 
 
-async def chat_sync(messages: list, model: str = "deepseek-chat", temperature: float = 0.3,
+async def chat_sync(messages: list, model: str = "deepseek-v4-pro", temperature: float = 0.3,
                     max_tokens: int = 2048, tools: Optional[list] = None):
     """
     非流式调用 DeepSeek API，返回完整响应消息。
@@ -106,3 +111,114 @@ async def chat_sync(messages: list, model: str = "deepseek-chat", temperature: f
 
     response = await client.chat.completions.create(**kwargs)
     return response.choices[0].message
+
+
+# ── Token 管理 ────────────────────────────────────────────
+
+TOKEN_BUDGET = 8000   # 输入 token 预算（留足余量给模型输出）
+TOKEN_ENCODING = None  # tiktoken 编码器缓存
+
+
+def _get_encoding():
+    """获取 tiktoken 编码器（cl100k_base 兼容 DeepSeek）"""
+    global TOKEN_ENCODING
+    if TOKEN_ENCODING is None:
+        import sys
+        import os as _os
+        if _os.path.isdir("D:/python-packages") and "D:/python-packages" not in sys.path:
+            sys.path.insert(0, "D:/python-packages")
+        import tiktoken
+        TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+    return TOKEN_ENCODING
+
+
+def count_tokens(messages: list) -> int:
+    """估算消息列表的 token 数（含 role 标记开销）"""
+    enc = _get_encoding()
+    total = 0
+    for msg in messages:
+        content = ""
+        if hasattr(msg, "content"):
+            content = msg.content or ""
+        elif isinstance(msg, dict) and "content" in msg:
+            content = msg["content"] or ""
+        total += len(enc.encode(content))
+
+        # tool_calls 额外开销
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            total += len(enc.encode(json.dumps(msg.tool_calls, ensure_ascii=False, default=str)))
+        elif isinstance(msg, dict) and msg.get("tool_calls"):
+            total += len(enc.encode(json.dumps(msg["tool_calls"], ensure_ascii=False, default=str)))
+
+    # 每条消息 ~4 tokens role 标记
+    total += len(messages) * 4
+    return total
+
+
+async def summarize_history(messages: list) -> list:
+    """
+    压缩对话历史：保留最近 3 条消息不变，之前的历史送给 LLM 做摘要。
+
+    Returns:
+        [SystemMessage(摘要), ..., 最近3条原文]
+    """
+    if len(messages) <= 5:
+        return messages
+
+    from langchain_core.messages import SystemMessage
+
+    # 分离：前半段做摘要，后半段保留原文
+    keep_count = 3
+    old_part = messages[:-keep_count]
+    recent_part = messages[-keep_count:]
+
+    # 构建摘要 prompt
+    old_text_parts = []
+    for m in old_part:
+        content = m.content if hasattr(m, "content") else str(m)
+        role = m.type if hasattr(m, "type") else m.get("role", "user")
+        old_text_parts.append(f"[{role}]: {str(content)[:500]}")
+    old_text = "\n".join(old_text_parts)
+
+    summary_prompt = (
+        "请将以下对话历史压缩为一段关键事实摘要（不超过300字），"
+        "只保留用户问题要点和已确认的答案要点，丢弃推理过程细节：\n\n" + old_text
+    )
+
+    try:
+        response = await chat_sync(
+            messages=[{"role": "user", "content": summary_prompt}],
+            model="deepseek-v4-flash",
+            temperature=0.0,
+            max_tokens=400,
+        )
+        summary = response.content or ""
+        logger.info(f"History summarized: {len(old_part)} msgs -> {len(summary)} chars")
+        return [SystemMessage(content=f"[历史摘要] {summary}")] + list(recent_part)
+    except Exception as e:
+        logger.warning(f"History summarization failed: {e}, falling back to truncation")
+        return list(recent_part)
+
+
+def ensure_token_budget(messages: list, budget: int = TOKEN_BUDGET) -> list:
+    """
+    确保消息不超出 token 预算。
+
+    策略：
+    1. 总数 <= 预算 → 直接返回
+    2. 总数 > 预算 → LLM 摘要压缩前半段历史（保留最近 3 条原文）
+    3. 摘要后仍超出 → 硬截断最旧消息
+    """
+    total = count_tokens(messages)
+    if total <= budget:
+        return messages
+
+    logger.info(f"Token budget exceeded: {total} > {budget}, compressing...")
+
+    # 压缩前半段历史
+    compressed = messages  # summarize_history is async, handled by caller
+    while count_tokens(compressed) > budget and len(compressed) > 2:
+        compressed = compressed[1:]  # 硬截断最旧消息
+
+    logger.info(f"Token budget met: {count_tokens(compressed)} tokens after compression")
+    return compressed

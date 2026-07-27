@@ -11,6 +11,7 @@ public class MessageDto {
     private String content;
     private List<Map<String, Object>> citations;
     private List<Map<String, Object>> agentSteps;
+    private String feedback;
     private LocalDateTime timestamp;
 
     public MessageDto() {}
@@ -25,6 +26,8 @@ public class MessageDto {
     public void setCitations(List<Map<String, Object>> citations) { this.citations = citations; }
     public List<Map<String, Object>> getAgentSteps() { return agentSteps; }
     public void setAgentSteps(List<Map<String, Object>> agentSteps) { this.agentSteps = agentSteps; }
+    public String getFeedback() { return feedback; }
+    public void setFeedback(String feedback) { this.feedback = feedback; }
     public LocalDateTime getTimestamp() { return timestamp; }
     public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
 }

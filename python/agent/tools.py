@@ -1,52 +1,41 @@
 """
 Agent 工具集 — 封装 rag.retriever.hybrid_search 为 LangChain Tool。
 
-PRD §4.6 定义 4 个工具：
-1. search_policy    — 检索规章制度（按部门权限过滤）
-2. search_doc       — 检索技术文档（按标签筛选）
-3. search_employee  — 查询员工组织架构（MVP 占位）
-4. get_doc_detail   — 获取文档完整详情（MVP 占位）
+工具列表:
+1. search_knowledge  — 统一知识库检索（制度 + 技术文档）
+2. search_employee   — 查询员工组织架构
+3. get_doc_detail    — 获取文档完整详情
 """
 
-import json
 import logging
 from typing import Optional
 
 from langchain_core.tools import tool
-from rag.retriever import hybrid_search
+from rag.retriever import hybrid_search, get_document_chunks
 
 logger = logging.getLogger(__name__)
 
 
 @tool
-def search_policy(query: str, department: str = "全部") -> str:
-    """检索企业内部规章制度，包括员工手册、财务制度、考勤政策、报销流程等。
-    当用户询问休假、报销、考勤、薪酬福利等政策类问题时使用此工具。
+def search_knowledge(query: str, category: str = "all", department: str = "全部") -> str:
+    """统一知识库检索工具，覆盖企业规章制度和技术文档。
+    根据用户问题自动判断应检索的类别：
+    - category="policy": 检索规章制度（员工手册、财务制度、考勤政策、报销流程、休假规定等）
+    - category="tech_doc": 检索技术文档（API接口、系统架构、故障预案、技术规范等）
+    - category="all": 同时检索所有类型（默认）
 
     Args:
-        query: 搜索关键词，如"年假"、"报销"
+        query: 搜索关键词，如"年假天数"、"登录接口"、"数据库架构"
+        category: 文档类别 — policy(规章制度) / tech_doc(技术文档) / all(全部)
         department: 用户所属部门，用于权限过滤，默认为"全部"
     """
-    logger.info(f"[Tool:search_policy] query='{query}', department='{department}'")
-    hits = hybrid_search(query, department=department, security_level="内部", top_k=5)
+    logger.info(f"[Tool:search_knowledge] query='{query}', category='{category}', department='{department}'")
+    hits = hybrid_search(
+        query, department=department, security_level="内部",
+        top_k=5, category=category,
+    )
     if not hits:
-        return "未找到相关规章制度。"
-    return _format_hits(hits)
-
-
-@tool
-def search_doc(query: str, tags: Optional[str] = None) -> str:
-    """检索企业内部技术文档，包括API接口文档、系统架构、故障预案、技术规范等。
-    当用户询问技术实现、接口说明、系统设计等技术类问题时使用此工具。
-
-    Args:
-        query: 搜索关键词，如"登录接口"、"数据库设计"
-        tags: 技术标签，可选，如"Java"、"Python"
-    """
-    logger.info(f"[Tool:search_doc] query='{query}', tags='{tags}'")
-    hits = hybrid_search(query, department="全部", security_level="内部", top_k=5)
-    if not hits:
-        return "未找到相关技术文档。"
+        return f"未找到相关{'规章制度' if category == 'policy' else '技术文档' if category == 'tech_doc' else '文档'}。"
     return _format_hits(hits)
 
 
@@ -59,19 +48,27 @@ def search_employee(query: str) -> str:
         query: 搜索关键词，如"技术部负责人"
     """
     logger.info(f"[Tool:search_employee] query='{query}'")
-    return "员工通讯录功能开发中，暂不可用。如需查询请联系管理员。"
+    hits = hybrid_search(query, department="全部", security_level="内部", top_k=5)
+    if not hits:
+        return "未找到相关人员信息。请确认查询关键词后重试，或联系管理员。"
+    return _format_hits(hits)
 
 
 @tool
-def get_doc_detail(doc_id: str) -> str:
+def get_doc_detail(doc_id: int) -> str:
     """获取指定文档的完整详细内容。当检索片段不足以回答用户问题，
     需要查看文档全文时使用此工具。
 
     Args:
-        doc_id: 文档唯一ID，从检索结果中获取
+        doc_id: 文档唯一ID（整数），从检索结果中获取
     """
-    logger.info(f"[Tool:get_doc_detail] doc_id='{doc_id}'")
-    return "文档详情查询功能开发中，暂不可用。目前仅支持基于检索片段的问答。"
+    logger.info(f"[Tool:get_doc_detail] doc_id={doc_id}")
+    chunks = get_document_chunks(doc_id)
+    if not chunks:
+        return f"未找到文档 ID={doc_id} 的内容，文档可能已被删除。"
+    title = chunks[0].get("title", "未知文档")
+    full_text = "\n\n".join([c["text"] for c in chunks])
+    return f"文档《{title}》完整内容（共 {len(chunks)} 段）：\n\n{full_text[:3000]}"
 
 
 def _format_hits(hits: list) -> str:
@@ -81,10 +78,12 @@ def _format_hits(hits: list) -> str:
         title = h.get("title", "未知文档")
         heading = h.get("heading", "")
         text = h.get("text", "")[:300]
+        doc_type = h.get("doc_type", "")
+        type_label = {"policy": "[制度]", "tech_doc": "[技术]", "general": "[通用]"}.get(doc_type, "")
         section = f" (章节: {heading})" if heading else ""
-        results.append(f"[{i}] 来源: {title}{section}\n    {text}...")
+        results.append(f"[{i}] {type_label} 来源: {title}{section}\n    {text}...")
     return "\n\n".join(results)
 
 
-# 工具注册表（供 graph.py 使用）
-ALL_TOOLS = [search_policy, search_doc, search_employee, get_doc_detail]
+# 工具注册表（供 nodes.py / graph.py 使用）
+ALL_TOOLS = [search_knowledge, search_employee, get_doc_detail]

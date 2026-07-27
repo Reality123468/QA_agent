@@ -6,6 +6,7 @@ from typing import Optional
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from . import get_qdrant_client
+from . import bm25_index
 from .loader import load_document
 from .splitter import split_documents
 from .embedder import embed_texts, get_vector_size
@@ -65,8 +66,9 @@ def index_document(doc_info: dict, progress_url: Optional[str] = None) -> None:
     file_type = doc_info["file_type"]
     department = doc_info.get("department", "全部")
     security_level = doc_info.get("security_level", "内部")
+    doc_type = _infer_doc_type(title)
 
-    logger.info(f"Indexing document {doc_id}: {title}")
+    logger.info(f"Indexing document {doc_id}: {title} (doc_type={doc_type})")
     _send_progress(progress_url, doc_id, "INDEXING", "开始索引...")
 
     # 1. 连接 Qdrant 并确保 collection 存在
@@ -100,6 +102,7 @@ def index_document(doc_info: dict, progress_url: Optional[str] = None) -> None:
             "title": title,
             "department": department,
             "security_level": security_level,
+            "doc_type": doc_type,
             "chunk_index": i,
             "text": chunk.page_content,
             "source_page": chunk.metadata.get("page", 0),
@@ -110,7 +113,30 @@ def index_document(doc_info: dict, progress_url: Optional[str] = None) -> None:
 
     client.upsert(collection_name=COLLECTION_NAME, points=points)
     logger.info(f"Indexed {len(points)} chunks for document {doc_id}: {title}")
+
+    # 同步 BM25 索引
+    _send_progress(progress_url, doc_id, "INDEXING", "正在同步 BM25 索引...")
+    bm25_index.remove_doc(doc_id)
+    bm25_index.add_texts([
+        {"doc_id": doc_id, "chunk_index": i, "title": title, "text": texts[i], "doc_type": doc_type}
+        for i in range(len(texts))
+    ])
+
     _send_progress(progress_url, doc_id, "COMPLETED", f"索引完成，共 {len(points)} 个片段")
+
+
+def _infer_doc_type(title: str) -> str:
+    """根据文档标题推断文档类型"""
+    policy_keywords = ["制度", "规定", "办法", "手册", "考勤", "休假", "报销", "福利", "薪酬", "差旅", "行政"]
+    tech_keywords = ["接口", "API", "架构", "技术", "数据库", "部署", "故障", "预案", "运维", "开发", "代码", "测试"]
+
+    for kw in policy_keywords:
+        if kw in title:
+            return "policy"
+    for kw in tech_keywords:
+        if kw in title:
+            return "tech_doc"
+    return "general"
 
 
 def _delete_doc_chunks(client, doc_id: int):
@@ -129,6 +155,7 @@ def _delete_doc_chunks(client, doc_id: int):
         ),
     )
     logger.info(f"Deleted existing chunks for doc {doc_id}")
+    bm25_index.remove_doc(doc_id)
 
 
 def delete_document_chunks(doc_id: int) -> None:
