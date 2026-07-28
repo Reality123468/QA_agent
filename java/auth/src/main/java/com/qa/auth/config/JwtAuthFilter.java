@@ -1,6 +1,7 @@
 package com.qa.auth.config;
 
 import com.qa.auth.util.JwtUtil;
+import com.qa.common.UserPrincipal;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -37,12 +38,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 String username = claims.getSubject();
                 String role = claims.get("role", String.class);
                 Long userId = claims.get("userId", Long.class);
+                String department = claims.get("department", String.class);
+
+                UserPrincipal principal = new UserPrincipal(userId, username, role,
+                        department != null ? department : "全部");
 
                 UsernamePasswordAuthenticationToken auth =
                         new UsernamePasswordAuthenticationToken(
-                                username, null,
+                                principal, null,
                                 List.of(new SimpleGrantedAuthority(role)));
-                auth.setDetails(userId);
+                auth.setDetails(principal);
                 SecurityContextHolder.getContext().setAuthentication(auth);
             }
         }

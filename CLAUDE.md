@@ -15,8 +15,8 @@ Browser (Vue 3 SPA, port 5173 dev / port 80 prod via Nginx)
   → Java Document :8081 (CRUD + MinIO upload + triggers Python indexing)
   → Java Audit :8083   (Q&A history, admin-only)
     → Python AI :8000  (FastAPI — RAG retrieval + LangGraph Agent + DeepSeek LLM)
-      → DeepSeek API   (embeddings + chat completions with tool calling)
-      → Qdrant :6333   (vector search)
+      → DeepSeek API   (chat completions + tool calling; no embedding endpoint)
+      → Qdrant :6333   (vector search + payload storage)
       → MinIO :9000    (file storage)
   ↕ WebSocket :8081    (index progress broadcast: Python → Java → Browser)
 ```
@@ -27,7 +27,7 @@ Browser (Vue 3 SPA, port 5173 dev / port 80 prod via Nginx)
 2. **RAG chat (`mode=rag`):** Question → Java Chat → Python `/api/agent/chat/stream` → hybrid_search Qdrant → DeepSeek LLM generate → SSE stream (thinking → answer tokens → citations → done)
 3. **Agent chat (`mode=agent`):** Question → Java Chat → Python → LangGraph ReAct loop (agent_node ⇄ tools_node) → SSE stream (thought → action → observation → ... → answer tokens → done)
 4. **Search-only (`mode=search-only`):** Question → Java Chat → Python → hybrid_search Qdrant → SSE stream (thinking → citations → done), no LLM call
-5. **Audit & history:** Java Chat saves `AuditLog` (question/answer/responseTime) and `Message` (with citations/agentSteps JSON) for every Q&A. Conversation history persists across sessions.
+5. **Audit & history:** Java Chat saves `AuditLog` (question/answer/responseTime/errorMessage) and `Message` (with citations/agentSteps JSON) for every Q&A. Conversation history persists across sessions.
 
 ### LangGraph Agent (ReAct pattern)
 
@@ -41,15 +41,30 @@ START → agent_node (LLM decision: search or answer?)
     └── no tool_calls → END (final answer)
 ```
 
-**4 Tools** (defined in `python/agent/tools.py`, converted to OpenAI function-calling format):
-- `search_policy(query, department)` — search policies with department filter
-- `search_doc(query, tags)` — search technical docs
-- `search_employee(query)` — placeholder ("功能开发中")
-- `get_doc_detail(doc_id)` — placeholder ("功能开发中")
+**3 Tools** (defined in `python/agent/tools.py`, converted to OpenAI function-calling format):
+- `search_knowledge(query, category, department)` — unified knowledge base search (category="policy"/"tech_doc"/"all")
+- `search_employee(query)` — employee org chart and contact info search
+- `get_doc_detail(doc_id)` — fetch full document text by ID
 
 **Critical implementation detail:** The agent streams via `graph.astream(stream_mode="values")` — NOT `astream_events(v2)`. The latter only fires `on_chat_model_*` events for LangChain ChatModel wrappers, but `agent_node` calls `chat_sync()` (a direct OpenAI client wrapper), so those events never fire. `stream_mode="values"` emits the full accumulated state after each node, allowing direct message inspection.
 
 **Message conversion:** `_to_api_messages()` in `deepseek_client.py` converts LangChain message types (`msg.type` = "human"/"ai"/"system"/"tool") to OpenAI API format (`role` = "user"/"assistant"/"system"/"tool"). LangChain `AIMessage.tool_calls` uses `{name, args, id}` dicts; the OpenAI API expects `{id, type, function: {name, arguments: json_string}}`.
+
+### Agent 3-tier auto-downgrade
+
+When `mode=agent` is requested, `_agent_stream()` in `agent_routes.py` implements a transparent fallback chain:
+
+```
+Tier 1: Agent ReAct reasoning (LangGraph StateGraph)
+  ↓ on exception/timeout/no-answer
+Tier 2: Downgrade to RAG mode (hybrid_search + LLM generation)
+  ↓ on exception/failure
+Tier 3: Downgrade to search-only mode (hybrid_search, no LLM)
+  ↓ on exception/failure
+Tier 4: Fallback message ("系统暂时无法处理您的问题...")
+```
+
+Each downgrade emits an SSE `downgrade` event so the frontend can display the transition.
 
 ### API conventions
 
@@ -59,19 +74,46 @@ START → agent_node (LLM decision: search or answer?)
 - Python SSE format: `data: {"type":"answer","content":"..."}\n\n` (note: no mandatory space after `data:`, but parsing tolerates it)
 - **Critical:** Java uses camelCase in DTOs; Python Pydantic uses snake_case. When Java constructs Map bodies for Python, keys must be snake_case (e.g., `file_path`, `file_type`, `callback_url`)
 - **Critical:** Pydantic v2 rejects `null` for `List[HistoryMessage]` — Java must send `[]` not `null` for empty history
+- Java Chat sends `X-User-Role`, `X-User-Department`, `X-Conversation-Id` headers to Python for permission filtering
 
 ### SSE event types
 
 | Type | Direction | Meaning |
 |------|-----------|---------|
-| `thinking` | Python → Browser | RAG pipeline step (retrieving, generating) |
+| `thinking` | Python → Browser | RAG pipeline step (retrieving, reranking, generating) |
 | `answer` | Python → Browser | LLM answer text (token-by-token for rag, char-by-char for agent) |
 | `citation` | Python → Browser | Source document reference with metadata |
 | `thought` | Python → Browser | Agent begins reasoning |
 | `action` | Python → Browser | Agent calls a tool (includes tool name + args) |
 | `observation` | Python → Browser | Tool execution result (first 200 chars) |
+| `downgrade` | Python → Browser | Agent degraded to fallback mode (includes from/to in data) |
 | `done` | Python → Browser | Stream complete |
-| `error` | Python → Browser | Stream error |
+| `error` | Python → Browser | Stream error (includes error detail string) |
+
+### Permission Model
+
+Role-based access control with 4 roles. Department stored in JWT claims + `UserPrincipal` POJO (`java/common/`):
+
+| Permission | ROLE_EMPLOYEE | ROLE_LEADER | ROLE_HR | ROLE_ADMIN |
+|------------|:---:|:---:|:---:|:---:|
+| Q&A (all modes) | ✓ | ✓ | ✓ | ✓ |
+| Document mgmt (own dept) | ✗ | ✓ | ✓ | ✓ |
+| Document mgmt (all depts) | ✗ | ✗ | ✓ | ✓ |
+| Audit log (view + delete) | ✗ | ✗ | ✗ | ✓ |
+
+Role mapping on registration (`AuthServiceImpl.mapPositionToRole()`):
+- "普通员工" → ROLE_EMPLOYEE
+- "部门主管" → ROLE_LEADER
+- "人事专员" → ROLE_HR
+- "部门经理" → ROLE_ADMIN
+
+Implementation details:
+- `@EnableMethodSecurity` on `SecurityConfig.java` — required for `@PreAuthorize` to take effect
+- `DocumentController.java` class-level: `@PreAuthorize("!hasAuthority('ROLE_EMPLOYEE')")`
+- `AuditLogController.java` delete endpoints: `@PreAuthorize("hasAuthority('ROLE_ADMIN')")`
+- `DocumentServiceImpl.list()`: ROLE_LEADER → `findByDepartment()`; ROLE_HR/ROLE_ADMIN → `findAll()`
+- `GlobalExceptionHandler`: maps error code 4003 → HTTP 403, 4004 → HTTP 404
+- Frontend: `authStore.canManageDocuments` (non-employee), `authStore.isAdmin` controls nav visibility
 
 ## Common Commands
 
@@ -93,7 +135,8 @@ cd docker && docker compose up -d
 ```bash
 cd python
 poetry install                        # Install dependencies
-poetry run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+# Start with HuggingFace offline (HF blocked in China; embedder uses sklearn fallback)
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 poetry run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Java (all modules must compile together)
@@ -138,6 +181,13 @@ curl -s -N -X POST "http://localhost:8000/api/agent/chat/stream" \
   -H "X-API-Key: qa-agent-internal-api-key-2026" \
   -H "X-User-Role: ROLE_EMPLOYEE" \
   -d '{"question":"test","mode":"agent","history":[]}'
+
+# Search-only mode
+curl -s -N -X POST "http://localhost:8000/api/agent/chat/stream" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: qa-agent-internal-api-key-2026" \
+  -H "X-User-Role: ROLE_EMPLOYEE" \
+  -d '{"question":"test","mode":"search-only","history":[]}'
 ```
 
 ### Service ports
@@ -165,7 +215,7 @@ JPA `ddl-auto: update` auto-creates tables. Key tables:
 - `doc_document` — document module (title, file_path, file_type, department, security_level, index_status)
 - `conversation` — chat module (user_id, title, created_at, updated_at)
 - `chat_message` — chat module (conversation_id, role, content TEXT, citations TEXT JSON, agent_steps TEXT JSON, timestamp)
-- `audit_log` — audit module (user_id, question TEXT, answer TEXT, tools_called JSON, response_time INT, token_usage JSON, created_at)
+- `audit_log` — audit module (user_id, question TEXT, answer TEXT, tools_called JSON, response_time INT, token_usage JSON, error_message TEXT, created_at)
 
 ## Windows-Specific Pitfalls
 
@@ -175,6 +225,7 @@ JPA `ddl-auto: update` auto-creates tables. Key tables:
 - CRLF/LF warnings on git operations are cosmetic and harmless
 - Chinese characters in curl requests may fail with `Invalid UTF-8 middle byte` on Windows — use `-d @file.json` with a temp file, or test via the frontend browser
 - When killing and restarting Python services, ensure old processes don't linger on the port (use `netstat -ano | grep :8000` to verify)
+- HuggingFace is blocked in China — Python AI must be started with `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` to skip HF HTTP checks. BGE-M3 model weights are cached locally but `encode()` hangs on first use due to transformers background network probes, so the embedder falls through to sklearn HashingVectorizer
 
 ## Project Structure
 
@@ -187,55 +238,62 @@ QA_agent/
 ├── .env                                # API keys + MinIO credentials (gitignored)
 ├── python/
 │   ├── api/
-│   │   ├── main.py                     # FastAPI entry point, CORS, two routers under /api/agent
+│   │   ├── main.py                     # FastAPI entry point, CORS, startup pre-warming (Qdrant + BM25 + embedder)
 │   │   ├── dependencies.py             # X-API-Key verification
-│   │   ├── routes/agent_routes.py      # /index, /index/{id}, /chat/stream (rag/agent/search-only)
+│   │   ├── routes/agent_routes.py      # /index, /index/{id}, /chat/stream (rag/agent/search-only + 3-tier downgrade)
 │   │   ├── routes/health_routes.py     # /health
 │   │   └── schemas/                    # ChatRequest, ChatResponse, HistoryMessage, IndexRequest
 │   ├── agent/
 │   │   ├── state.py                    # AgentState TypedDict (messages, department, security_level, retrieved_docs)
-│   │   ├── tools.py                    # 4 LangChain tools: search_policy, search_doc, search_employee, get_doc_detail
+│   │   ├── tools.py                    # 3 tools: search_knowledge, search_employee, get_doc_detail
 │   │   ├── nodes.py                    # agent_node (LLM + tool_calls), tools_node (ToolMessage execution)
 │   │   └── graph.py                    # StateGraph: agent → conditional_edge → tools → agent (loop)
 │   ├── rag/
 │   │   ├── loader.py                   # Downloads from MinIO/HTTP, loads PDF/MD/TXT/DOCX
 │   │   ├── splitter.py                 # Chunking (MD by headings, PDF/DOCX by size)
-│   │   ├── embedder.py                 # Embedding (DeepSeek API → HuggingFace → sklearn HashingVectorizer)
+│   │   ├── embedder.py                 # Embedding fallback: DeepSeek API → sklearn HashingVectorizer (BGE-M3 disabled: HF blocked)
 │   │   ├── indexer.py                  # Qdrant upsert + HTTP progress callbacks to Java
-│   │   └── retriever.py               # Hybrid search with department/security_level filters
+│   │   ├── retriever.py               # Hybrid search (BM25 + vector) with RRF fusion, department/security_level filters
+│   │   └── bm25_index.py              # BM25 keyword index rebuilt from Qdrant on startup
+│   ├── eval/
+│   │   └── __init__.py                 # Evaluation utilities
 │   └── llm/
-│       ├── rag_chain.py               # RAG pipeline: retrieve → prompt → LLM stream → citations
-│       └── deepseek_client.py         # chat_stream (yield tokens) + chat_sync (non-streaming with tools)
+│       ├── rag_chain.py               # RAG pipeline: retrieve → rerank → prompt → LLM stream → citations
+│       └── deepseek_client.py         # chat_stream (yield tokens) + chat_sync (non-streaming with tools) + token management
 ├── java/
 │   ├── pom.xml                         # Parent POM (Spring Boot 3.5.16, Java 21)
-│   ├── common/                         # ApiResult, PageResult, ErrorCode, BusinessException
-│   ├── auth/                           # JWT auth (login, register, SecurityConfig, JwtAuthFilter)
-│   ├── document/                       # Document CRUD, MinIO upload, async Python indexing
+│   ├── common/                         # ApiResult, PageResult, ErrorCode, BusinessException, UserPrincipal
+│   ├── auth/                           # JWT auth + @EnableMethodSecurity + JwtAuthFilter (UserPrincipal from JWT)
+│   ├── document/                       # Document CRUD, MinIO upload, async Python indexing, role-based access
 │   │   ├── ws/IndexProgressHandler.java    # WebSocket handler for real-time index progress
 │   │   └── config/WebSocketConfig.java     # WebSocket endpoint registration
-│   ├── chat/                           # SSE proxy to Python, conversation persistence, audit logging
+│   ├── chat/                           # SSE proxy to Python, conversation/audit persistence, error detail capture
 │   │   ├── entity/Conversation.java    # JPA: id, userId, title, timeestamps
 │   │   ├── entity/Message.java         # JPA: role, content, citations(JSON), agentSteps(JSON)
 │   │   ├── dto/ChatRequest.java        # question, history, mode, conversationId
 │   │   ├── dto/ChatResponse.java       # type, content, data (builder pattern)
-│   │   └── service/impl/ChatServiceImpl.java  # SSE proxy + conversation/audit persistence
-│   ├── audit/                          # Q&A history query (admin-only, paginated)
+│   │   └── service/impl/ChatServiceImpl.java  # SSE proxy + conversation/audit persistence + error extraction
+│   ├── audit/                          # Q&A history CRUD + batch delete (admin-only via @PreAuthorize)
 │   ├── launcher/                       # ProcessBuilder one-click launcher
 │   └── frontend/                       # Vue 3 SPA (Vite + Element Plus + Pinia)
 │       └── src/
 │           ├── api/chat.ts             # SSE fetch-based stream client (Fetch API + AbortController)
-│           ├── router/index.ts         # /chat, /documents, /audit (admin), /login
-│           ├── stores/                 # Pinia: auth, chat (messages + conversations), document
+│           ├── api/audit.ts            # Audit log API (list + delete + batchDelete)
+│           ├── router/index.ts         # /chat, /documents (non-employee), /audit (admin), /login
+│           ├── stores/                 # Pinia: auth (role checks), chat (messages + conversations), document
 │           ├── components/chat/        # ChatInput, ChatMessage, AgentThinking, ConversationList
-│           └── views/                  # ChatView, DocumentsView, AuditView, LoginView
+│           └── views/                  # ChatView, DocumentsView, AuditView (with batch delete), LoginView
 ```
 
 ## RAG & Agent Pipeline Details
 
-- **Embedding:** 3-tier fallback — DeepSeek API (1536-dim) → HuggingFace `all-MiniLM-L6-v2` (384-dim, local) → sklearn HashingVectorizer (384-dim, guaranteed). First successful init wins.
+- **Embedding:** 2-tier fallback — DeepSeek API (attempted first) → sklearn HashingVectorizer (384-dim, guaranteed). BGE-M3 is disabled (model loads but `encode()` hangs when HF is blocked in China). DeepSeek has no dedicated embedding endpoint (returns 404 on `deepseek-chat`). Result: current active embedder is sklearn.
 - **Chunking:** MD uses MarkdownHeaderTextSplitter by H2/H3 headings; PDF/TXT/DOCX uses RecursiveCharacterTextSplitter (800 char chunks, 150 overlap)
-- **Retrieval:** Semantic search via Qdrant with `department` (MatchAny) and `security_level` (MatchExcept for non-privileged users) filters. Returns empty results gracefully if collection doesn't exist.
+- **Retrieval:** Hybrid BM25 (keyword) + Qdrant vector (semantic) dual-recall → RRF fusion. BM25 always works; vector search depends on embedder compatibility with stored vectors. `department` filter uses MatchAny(["Tech", "全部"]); `security_level` filter excludes "机密" for non-privileged users (ROLE_EMPLOYEE, ROLE_LEADER). Returns empty results gracefully if collection doesn't exist.
+- **Reranker:** `rerank_listwise()` in `python/rag/reranker.py` — uses DeepSeek LLM to score and re-rank top-10 candidates down to top-5 before prompt construction.
 - **RAG prompt:** System prompt instructs LLM to answer only from reference docs, cite sources, admit gaps honestly
-- **Agent prompt:** Defines Thought→Action→Observation ReAct workflow. 4 tools available. Emphasizes no fabrication, cite sources, refuse out-of-scope questions.
+- **Agent prompt:** Defines Thought→Action→Observation ReAct workflow with 3 tools. Emphasizes no fabrication, cite sources, refuse out-of-scope questions.
 - **Agent streaming:** Uses `graph.astream(stream_mode="values")` with `recursion_limit: 10`. Each chunk is the full accumulated state; new messages are identified by tracking `msg_count`. Tool call messages (AIMessage with tool_calls) and tool results (ToolMessage with tool_call_id) are yielded as SSE action/observation events. The final AIMessage without tool_calls is the answer.
 - **Tool calling:** Agent tools are converted to OpenAI function-calling format. `chat_sync()` passes `tools` + `tool_choice="auto"` to DeepSeek API. Response tool_calls are parsed into AIMessage tool_calls dicts `{id, name, args}`.
+- **Token management:** `TOKEN_BUDGET = 8000`. `count_tokens()` uses tiktoken `cl100k_base`. `summarize_history()` compresses older messages via DeepSeek flash model. `ensure_token_budget()` hard-truncates from head if budget exceeded.
+- **Error handling:** All Python LLM/embedding calls wrapped in try/catch with detailed error messages. Errors propagate via SSE `error` events → Java `doOnError` → `AuditLog.errorMessage`. Frontend displays error details in audit log view.

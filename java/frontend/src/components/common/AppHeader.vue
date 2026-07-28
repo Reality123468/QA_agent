@@ -11,7 +11,7 @@
         :ellipsis="false"
       >
         <el-menu-item index="/chat">智能问答</el-menu-item>
-        <el-menu-item index="/documents">文档管理</el-menu-item>
+        <el-menu-item v-if="auth.canManageDocuments" index="/documents">文档管理</el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/audit">审计日志</el-menu-item>
       </el-menu>
       <el-dropdown class="user-dropdown">

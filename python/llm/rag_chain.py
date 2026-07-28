@@ -89,8 +89,9 @@ async def answer_with_rag(question: str, history: List[dict] = None,
             full_answer += token
             yield f"data: {json.dumps({'type': 'answer', 'content': token}, ensure_ascii=False)}\n\n"
     except Exception as e:
-        logger.error(f"LLM generation failed: {e}")
-        yield f"data: {json.dumps({'type': 'error', 'content': 'AI服务暂时不可用，请稍后重试'})}\n\n"
+        error_detail = str(e) if str(e) else type(e).__name__
+        logger.error(f"LLM generation failed: {error_detail}", exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', 'content': f'AI服务暂时不可用: {error_detail[:200]}'}, ensure_ascii=False)}\n\n"
         return
 
     logger.info(f"RAG answer complete ({len(full_answer)} chars): {full_answer[:200]}...")

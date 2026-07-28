@@ -73,9 +73,13 @@ def _qdrant_search(
     ]
 
 
-def _bm25_search(query: str, top_k: int, category: str = "all") -> List[dict]:
+def _bm25_search(query: str, top_k: int, category: str = "all",
+                 department: str = "全部", security_level: str = "内部") -> List[dict]:
     """BM25 关键词检索，结果转为统一格式"""
-    results = bm25_index.search(query, top_k=top_k, category=category)
+    results = bm25_index.search(
+        query, top_k=top_k, category=category,
+        department=department, security_level=security_level,
+    )
     hits = []
     for idx, score in results:
         item = bm25_index.get_corpus_item(idx)
@@ -86,6 +90,8 @@ def _bm25_search(query: str, top_k: int, category: str = "all") -> List[dict]:
                 "doc_id": item["doc_id"],
                 "chunk_index": item["chunk_index"],
                 "doc_type": item.get("doc_type", "general"),
+                "department": item.get("department", "全部"),
+                "security_level": item.get("security_level", "内部"),
                 "source_page": 0,
                 "heading": "",
                 "score": float(score),
@@ -160,7 +166,9 @@ def hybrid_search(
         future_dense = executor.submit(
             _qdrant_search, query_vector, department, security_level, recall_size, category
         )
-        future_sparse = executor.submit(_bm25_search, query, recall_size, category)
+        future_sparse = executor.submit(
+            _bm25_search, query, recall_size, category, department, security_level
+        )
         dense_hits = future_dense.result()
         sparse_hits = future_sparse.result()
 

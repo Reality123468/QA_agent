@@ -5,15 +5,17 @@ public class LoginResponse {
     private String username;
     private String role;
     private String department;
+    private String position;
 
     public LoginResponse() {
     }
 
-    public LoginResponse(String token, String username, String role, String department) {
+    public LoginResponse(String token, String username, String role, String department, String position) {
         this.token = token;
         this.username = username;
         this.role = role;
         this.department = department;
+        this.position = position;
     }
 
     public String getToken() {
@@ -48,6 +50,14 @@ public class LoginResponse {
         this.department = department;
     }
 
+    public String getPosition() {
+        return position;
+    }
+
+    public void setPosition(String position) {
+        this.position = position;
+    }
+
     // --- Builder ---
 
     public static Builder builder() {
@@ -59,6 +69,7 @@ public class LoginResponse {
         private String username;
         private String role;
         private String department;
+        private String position;
 
         public Builder token(String token) {
             this.token = token;
@@ -80,8 +91,13 @@ public class LoginResponse {
             return this;
         }
 
+        public Builder position(String position) {
+            this.position = position;
+            return this;
+        }
+
         public LoginResponse build() {
-            return new LoginResponse(token, username, role, department);
+            return new LoginResponse(token, username, role, department, position);
         }
     }
 }

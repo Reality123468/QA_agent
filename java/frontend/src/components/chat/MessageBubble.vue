@@ -9,6 +9,30 @@
         :key="idx"
         :citation="c"
       />
+      <div v-if="message.role === 'assistant' && !message.isStreaming" class="feedback-row">
+        <el-tooltip content="有帮助" placement="top">
+          <el-button
+            :type="message.feedback === 'thumbs_up' ? 'primary' : 'default'"
+            :disabled="message.feedback === 'thumbs_down'"
+            size="small"
+            circle
+            @click="$emit('feedback', message.id, 'thumbs_up')"
+          >
+            <span class="feedback-icon">👍</span>
+          </el-button>
+        </el-tooltip>
+        <el-tooltip content="无帮助" placement="top">
+          <el-button
+            :type="message.feedback === 'thumbs_down' ? 'primary' : 'default'"
+            :disabled="message.feedback === 'thumbs_up'"
+            size="small"
+            circle
+            @click="$emit('feedback', message.id, 'thumbs_down')"
+          >
+            <span class="feedback-icon">👎</span>
+          </el-button>
+        </el-tooltip>
+      </div>
     </div>
   </div>
 </template>
@@ -22,6 +46,10 @@ import AgentThinking from './AgentThinking.vue'
 
 const props = defineProps<{
   message: ChatMessage
+}>()
+
+defineEmits<{
+  feedback: [messageId: string, feedback: string]
 }>()
 
 const renderedContent = computed(() => {
@@ -99,6 +127,16 @@ function escapeHtml(text: string): string {
   display: inline;
   animation: blink 1s infinite;
   color: #409eff;
+}
+.feedback-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e4e7ed;
+}
+.feedback-icon {
+  font-size: 14px;
 }
 @keyframes blink {
   0%, 50% { opacity: 1; }

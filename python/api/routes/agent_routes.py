@@ -51,10 +51,11 @@ async def chat_stream_route(
     api_key: str = Depends(verify_api_key),
     x_user_role: str = Header(default="ROLE_EMPLOYEE", alias="X-User-Role"),
     x_user_department: str = Header(default="全部", alias="X-User-Department"),
+    x_conversation_id: str = Header(default="", alias="X-Conversation-Id"),
 ):
     """SSE 流式对话 — 支持三种模式：agent / rag / search-only"""
     security_level = "内部"
-    if x_user_role in ("ROLE_LEADER", "ROLE_ADMIN"):
+    if x_user_role in ("ROLE_LEADER", "ROLE_ADMIN", "ROLE_HR"):
         security_level = "机密"
 
     history = [
@@ -72,7 +73,8 @@ async def chat_stream_route(
         )
     elif mode == "agent":
         return StreamingResponse(
-            _agent_stream(request.question, history, x_user_department, security_level),
+            _agent_stream(request.question, history, x_user_department, security_level,
+                          x_conversation_id or None),
             media_type="text/event-stream",
         )
     else:
@@ -102,7 +104,8 @@ async def _search_only_stream(question: str, department: str, security_level: st
     yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
 
 
-async def _agent_stream(question: str, history: list, department: str, security_level: str):
+async def _agent_stream(question: str, history: list, department: str, security_level: str,
+                      conversation_id: str = None):
     """Agent 模式：ReAct 推理循环 + 流式输出（含 3 级自动降级）
 
     降级链路：
@@ -111,20 +114,30 @@ async def _agent_stream(question: str, history: list, department: str, security_
     3. 全部失败 → 兜底回复
     """
     agent_failed = False
+    from langchain_core.messages import AIMessage as LCAIMessage
 
     # ── Tier 1: Agent ReAct 推理 ──
     try:
         graph = get_agent_graph()
 
+        # 构建带历史的消息列表
+        history_messages = []
+        for h in history:
+            if h["role"] == "user":
+                history_messages.append(HumanMessage(content=h["content"]))
+            elif h["role"] == "assistant":
+                history_messages.append(LCAIMessage(content=h["content"]))
+
         initial_state: AgentState = {
-            "messages": [HumanMessage(content=question)],
+            "messages": history_messages + [HumanMessage(content=question)],
             "department": department,
             "security_level": security_level,
             "retrieved_docs": [],
         }
 
+        thread_id = f"agent-{conversation_id}" if conversation_id else f"agent-{hash(question)}"
         config = {
-            "configurable": {"thread_id": f"agent-{hash(question)}"},
+            "configurable": {"thread_id": thread_id},
             "recursion_limit": 10,
         }
 
@@ -172,7 +185,9 @@ async def _agent_stream(question: str, history: list, department: str, security_
         agent_failed = True
 
     except Exception as e:
-        logger.error(f"Agent stream error: {e}", exc_info=True)
+        error_detail = str(e) if str(e) else type(e).__name__
+        logger.error(f"Agent stream error: {error_detail}", exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', 'content': f'Agent 推理失败: {error_detail[:200]}'}, ensure_ascii=False)}\n\n"
         agent_failed = True
 
     # ── Tier 2: 降级到 RAG 模式 ──

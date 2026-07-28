@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/audit")
 public class AuditLogController {
@@ -28,5 +30,19 @@ public class AuditLogController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) Long userId) {
         return ApiResult.success(auditLogService.list(page, size, userId));
+    }
+
+    @DeleteMapping("/logs/{id}")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    public ApiResult<Void> delete(@PathVariable Long id) {
+        auditLogService.delete(id);
+        return ApiResult.success(null);
+    }
+
+    @DeleteMapping("/logs/batch")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    public ApiResult<Void> deleteBatch(@RequestBody List<Long> ids) {
+        auditLogService.deleteBatch(ids);
+        return ApiResult.success(null);
     }
 }

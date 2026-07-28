@@ -3,6 +3,7 @@ package com.qa.document.service.impl;
 import com.qa.common.BusinessException;
 import com.qa.common.ErrorCode;
 import com.qa.common.PageResult;
+import com.qa.common.UserPrincipal;
 import com.qa.document.dto.DocumentResponse;
 import com.qa.document.entity.DocDocument;
 import com.qa.document.repository.DocumentRepository;
@@ -95,8 +96,13 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public PageResult<DocumentResponse> list(int page, int size) {
-        Page<DocDocument> docPage = documentRepository.findAll(PageRequest.of(page - 1, size));
+    public PageResult<DocumentResponse> list(int page, int size, UserPrincipal user) {
+        Page<DocDocument> docPage;
+        if (user.isLeader()) {
+            docPage = documentRepository.findByDepartment(user.getDepartment(), PageRequest.of(page - 1, size));
+        } else {
+            docPage = documentRepository.findAll(PageRequest.of(page - 1, size));
+        }
         return PageResult.of(
                 docPage.getContent().stream().map(this::toResponse).toList(),
                 docPage.getTotalElements(),
@@ -114,9 +120,13 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public void delete(Long id) {
+    public void delete(Long id, UserPrincipal user) {
         DocDocument doc = documentRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.DOCUMENT_NOT_FOUND));
+
+        if (user.isLeader() && !doc.getDepartment().equals(user.getDepartment())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
 
         try {
             minioClient.removeObject(RemoveObjectArgs.builder()
@@ -143,9 +153,13 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     @Async
-    public void triggerIndex(Long id) {
+    public void triggerIndex(Long id, UserPrincipal user) {
         DocDocument doc = documentRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.DOCUMENT_NOT_FOUND));
+
+        if (user.isLeader() && !doc.getDepartment().equals(user.getDepartment())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
 
         doc.setStatus("INDEXING");
         documentRepository.save(doc);

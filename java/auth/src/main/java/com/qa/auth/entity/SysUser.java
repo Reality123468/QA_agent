@@ -25,6 +25,9 @@ public class SysUser {
     @Column(length = 20)
     private String role = "ROLE_EMPLOYEE";
 
+    @Column(length = 50)
+    private String position;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -32,13 +35,14 @@ public class SysUser {
     }
 
     public SysUser(Long id, String username, String password, String email,
-                   String department, String role, LocalDateTime createdAt) {
+                   String department, String role, String position, LocalDateTime createdAt) {
         this.id = id;
         this.username = username;
         this.password = password;
         this.email = email;
         this.department = department;
         this.role = role;
+        this.position = position;
         this.createdAt = createdAt;
     }
 
@@ -97,6 +101,14 @@ public class SysUser {
         this.role = role;
     }
 
+    public String getPosition() {
+        return position;
+    }
+
+    public void setPosition(String position) {
+        this.position = position;
+    }
+
     public LocalDateTime getCreatedAt() {
         return createdAt;
     }
@@ -118,6 +130,7 @@ public class SysUser {
         private String email;
         private String department;
         private String role = "ROLE_EMPLOYEE";
+        private String position;
         private LocalDateTime createdAt;
 
         public Builder id(Long id) {
@@ -150,13 +163,18 @@ public class SysUser {
             return this;
         }
 
+        public Builder position(String position) {
+            this.position = position;
+            return this;
+        }
+
         public Builder createdAt(LocalDateTime createdAt) {
             this.createdAt = createdAt;
             return this;
         }
 
         public SysUser build() {
-            return new SysUser(id, username, password, email, department, role, createdAt);
+            return new SysUser(id, username, password, email, department, role, position, createdAt);
         }
     }
 }

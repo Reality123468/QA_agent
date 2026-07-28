@@ -2,14 +2,27 @@
   <div class="audit-layout">
     <AppHeader />
     <div class="audit-body">
-      <h3>审计日志</h3>
+      <div class="toolbar">
+        <h3>审计日志</h3>
+        <el-button
+          v-if="selectedIds.length > 0"
+          type="danger"
+          @click="handleBatchDelete"
+        >
+          批量删除 ({{ selectedIds.length }})
+        </el-button>
+      </div>
+
       <el-table
+        ref="tableRef"
         :data="logs"
         v-loading="loading"
         stripe
         @expand-change="handleExpand"
+        @selection-change="handleSelectionChange"
         class="audit-table"
       >
+        <el-table-column type="selection" width="50" />
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="expand-content">
@@ -33,6 +46,18 @@
           </template>
         </el-table-column>
         <el-table-column prop="createdAt" label="时间" width="170" />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-popconfirm
+              title="确定删除该日志？"
+              @confirm="handleDelete(row.id)"
+            >
+              <template #reference>
+                <el-button type="danger" size="small" link>删除</el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
       </el-table>
       <div class="pagination-wrap" v-if="total > 20">
         <el-pagination
@@ -51,12 +76,16 @@
 import { ref, onMounted } from 'vue'
 import AppHeader from '@/components/common/AppHeader.vue'
 import { auditApi, AuditLogItem } from '@/api/audit'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const logs = ref<AuditLogItem[]>([])
 const total = ref(0)
 const loading = ref(false)
+const selectedIds = ref<number[]>([])
+const currentPage = ref(1)
 
 async function fetchPage(page: number = 1) {
+  currentPage.value = page
   loading.value = true
   try {
     const result = await auditApi.list(page, 20)
@@ -67,8 +96,36 @@ async function fetchPage(page: number = 1) {
   }
 }
 
-function handleExpand(_row: any, expandedRows: any[]) {
-  // expand logic handled by el-table internally
+function handleExpand(_row: any, _expandedRows: any[]) {}
+
+function handleSelectionChange(rows: AuditLogItem[]) {
+  selectedIds.value = rows.map(r => r.id)
+}
+
+async function handleDelete(id: number) {
+  try {
+    await auditApi.delete(id)
+    ElMessage.success('删除成功')
+    fetchPage(currentPage.value)
+  } catch {
+    // error already shown by interceptor
+  }
+}
+
+async function handleBatchDelete() {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${selectedIds.value.length} 条日志？此操作不可恢复。`,
+      '批量删除',
+      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+    )
+    await auditApi.batchDelete(selectedIds.value)
+    ElMessage.success('批量删除成功')
+    selectedIds.value = []
+    fetchPage(currentPage.value)
+  } catch {
+    // user cancelled or error
+  }
 }
 
 onMounted(() => fetchPage())
@@ -85,10 +142,15 @@ onMounted(() => fetchPage())
   padding: 20px 24px;
   overflow-y: auto;
 }
-.audit-body h3 {
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.toolbar h3 {
   font-size: 18px;
   color: #303133;
-  margin-bottom: 16px;
 }
 .audit-table {
   background: #fff;

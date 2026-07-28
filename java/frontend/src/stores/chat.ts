@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { createChatStream, SSEEvent, HistoryMessage, listConversations, getMessages, deleteConversation, ConversationDto } from '@/api/chat'
+import { createChatStream, SSEEvent, HistoryMessage, listConversations, getMessages, deleteConversation, ConversationDto, submitFeedback as submitFeedbackApi } from '@/api/chat'
 
 export interface AgentStep {
   type: 'thought' | 'action' | 'observation'
@@ -17,6 +17,7 @@ export interface ChatMessage {
   agentSteps: AgentStep[]
   isStreaming: boolean
   timestamp: number
+  feedback?: string
 }
 
 export interface Citation {
@@ -61,7 +62,8 @@ export const useChatStore = defineStore('chat', () => {
         citations: m.citations || [],
         agentSteps: m.agentSteps || [],
         isStreaming: false,
-        timestamp: new Date(m.timestamp).getTime()
+        timestamp: new Date(m.timestamp).getTime(),
+        feedback: m.feedback
       }))
       currentConversationId.value = conversationId
 
@@ -84,6 +86,17 @@ export const useChatStore = defineStore('chat', () => {
       }
     } catch (e) {
       console.error('Failed to delete conversation:', e)
+    }
+  }
+
+  async function submitFeedback(messageId: string, feedback: string) {
+    const msg = messages.value.find(m => m.id === messageId)
+    if (!msg || msg.role !== 'assistant') return
+    try {
+      await submitFeedbackApi(Number(messageId), feedback)
+      msg.feedback = feedback
+    } catch (e) {
+      console.error('Failed to submit feedback:', e)
     }
   }
 
@@ -223,7 +236,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     messages, isStreaming, conversations, currentConversationId,
-    conversationsLoading, sendMessage, stopStreaming, clearHistory,
+    conversationsLoading, sendMessage, stopStreaming, clearHistory, submitFeedback,
     loadConversations, switchConversation, removeConversation, newConversation
   }
 })

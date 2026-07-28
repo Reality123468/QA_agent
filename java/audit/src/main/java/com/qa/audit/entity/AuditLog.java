@@ -28,6 +28,9 @@ public class AuditLog {
     @Column(name = "token_usage", columnDefinition = "JSON")
     private String tokenUsage;
 
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    private String errorMessage;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -36,7 +39,7 @@ public class AuditLog {
 
     public AuditLog(Long id, Long userId, String question, String answer,
                     String toolsCalled, Integer responseTime, String tokenUsage,
-                    LocalDateTime createdAt) {
+                    String errorMessage, LocalDateTime createdAt) {
         this.id = id;
         this.userId = userId;
         this.question = question;
@@ -44,6 +47,7 @@ public class AuditLog {
         this.toolsCalled = toolsCalled;
         this.responseTime = responseTime;
         this.tokenUsage = tokenUsage;
+        this.errorMessage = errorMessage;
         this.createdAt = createdAt;
     }
 
@@ -112,6 +116,14 @@ public class AuditLog {
         this.tokenUsage = tokenUsage;
     }
 
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    public void setErrorMessage(String errorMessage) {
+        this.errorMessage = errorMessage;
+    }
+
     public LocalDateTime getCreatedAt() {
         return createdAt;
     }
@@ -134,6 +146,7 @@ public class AuditLog {
         private String toolsCalled;
         private Integer responseTime;
         private String tokenUsage;
+        private String errorMessage;
         private LocalDateTime createdAt;
 
         public Builder id(Long id) {
@@ -171,6 +184,11 @@ public class AuditLog {
             return this;
         }
 
+        public Builder errorMessage(String errorMessage) {
+            this.errorMessage = errorMessage;
+            return this;
+        }
+
         public Builder createdAt(LocalDateTime createdAt) {
             this.createdAt = createdAt;
             return this;
@@ -178,7 +196,7 @@ public class AuditLog {
 
         public AuditLog build() {
             return new AuditLog(id, userId, question, answer,
-                    toolsCalled, responseTime, tokenUsage, createdAt);
+                    toolsCalled, responseTime, tokenUsage, errorMessage, createdAt);
         }
     }
 }

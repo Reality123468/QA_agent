@@ -5,6 +5,7 @@ export interface LoginResponse {
   username: string
   role: string
   department: string
+  position: string
 }
 
 export interface RegisterParams {
@@ -12,6 +13,7 @@ export interface RegisterParams {
   password: string
   email: string
   department: string
+  position: string
 }
 
 export const authApi = {

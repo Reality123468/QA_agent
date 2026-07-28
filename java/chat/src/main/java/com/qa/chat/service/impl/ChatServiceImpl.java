@@ -99,10 +99,11 @@ public class ChatServiceImpl implements ChatService {
                 .header("X-User-Id", userId)
                 .header("X-User-Role", role)
                 .header("X-User-Department", department != null ? department : "全部")
+                .header("X-Conversation-Id", String.valueOf(conversationId))
                 .bodyValue(request)
                 .retrieve()
                 .bodyToFlux(ChatResponse.class)
-                .timeout(Duration.ofSeconds(60))
+                .timeout(Duration.ofSeconds(180))
                 .doOnNext(event -> {
                     switch (event.getType()) {
                         case "answer":
@@ -123,16 +124,20 @@ public class ChatServiceImpl implements ChatService {
                     saveAssistantMessage(conversationId, answerBuffer.toString(), citationList, agentStepList);
                 })
                 .doOnError(e -> {
-                    log.error("Chat stream error", e);
-                    updateAuditLog(auditLog, answerBuffer.toString(), startTime);
+                    String errorDetail = extractErrorDetail(e);
+                    log.error("Chat stream error: {}", errorDetail, e);
+                    updateAuditLog(auditLog, answerBuffer.toString(), startTime, errorDetail);
                     if (answerBuffer.length() > 0) {
                         saveAssistantMessage(conversationId, answerBuffer.toString(), citationList, agentStepList);
                     }
                 })
-                .onErrorResume(e -> Flux.just(ChatResponse.builder()
-                        .type("error")
-                        .content("AI服务暂时不可用，请稍后重试")
-                        .build()));
+                .onErrorResume(e -> {
+                    String cause = extractErrorDetail(e);
+                    return Flux.just(ChatResponse.builder()
+                            .type("error")
+                            .content("AI服务暂时不可用，请稍后重试。错误详情: " + cause)
+                            .build());
+                });
     }
 
     private Conversation createConversation(Long userId, String question) {
@@ -193,14 +198,31 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private void updateAuditLog(AuditLog auditLog, String answer, long startTime) {
+        updateAuditLog(auditLog, answer, startTime, null);
+    }
+
+    private void updateAuditLog(AuditLog auditLog, String answer, long startTime, String errorMessage) {
         try {
             int responseTime = (int) (System.currentTimeMillis() - startTime);
             auditLog.setAnswer(answer.isEmpty() ? null : answer);
             auditLog.setResponseTime(responseTime);
+            if (errorMessage != null) {
+                auditLog.setErrorMessage(errorMessage);
+            }
             auditLogService.save(auditLog);
-            log.info("Audit log updated: responseTime={}ms, answerLen={}", responseTime, answer.length());
+            log.info("Audit log updated: responseTime={}ms, answerLen={}, error={}", responseTime, answer.length(),
+                    errorMessage != null ? errorMessage.substring(0, Math.min(100, errorMessage.length())) : "none");
         } catch (Exception e) {
             log.error("Failed to update audit log", e);
         }
+    }
+
+    private String extractErrorDetail(Throwable e) {
+        if (e == null) return "未知错误";
+        String msg = e.getMessage();
+        if (msg != null && !msg.isEmpty()) return msg;
+        Throwable cause = e.getCause();
+        if (cause != null && cause.getMessage() != null) return cause.getMessage();
+        return e.getClass().getSimpleName();
     }
 }

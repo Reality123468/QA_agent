@@ -14,6 +14,7 @@ public enum ErrorCode {
     AI_SERVICE_UNAVAILABLE(3001, "AI服务暂时不可用"),
     AI_TIMEOUT(3002, "AI服务响应超时"),
     FORBIDDEN(4003, "无权限访问"),
+    AUDIT_LOG_NOT_FOUND(4005, "审计日志不存在"),
     INTERNAL_ERROR(5000, "服务器内部错误");
 
     private final int code;

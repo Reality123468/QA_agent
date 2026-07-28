@@ -118,7 +118,8 @@ def index_document(doc_info: dict, progress_url: Optional[str] = None) -> None:
     _send_progress(progress_url, doc_id, "INDEXING", "正在同步 BM25 索引...")
     bm25_index.remove_doc(doc_id)
     bm25_index.add_texts([
-        {"doc_id": doc_id, "chunk_index": i, "title": title, "text": texts[i], "doc_type": doc_type}
+        {"doc_id": doc_id, "chunk_index": i, "title": title, "text": texts[i],
+         "doc_type": doc_type, "department": department, "security_level": security_level}
         for i in range(len(texts))
     ])
 

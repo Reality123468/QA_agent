@@ -71,16 +71,20 @@ async def chat_stream(messages: list, model: str = "deepseek-v4-pro", temperatur
     """流式调用 DeepSeek API，逐 token yield"""
     client = get_client()
     api_messages = _to_api_messages(messages)
-    response = await client.chat.completions.create(
-        model=model,
-        messages=api_messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=True,
-    )
-    async for chunk in response:
-        if chunk.choices and chunk.choices[0].delta.content:
-            yield chunk.choices[0].delta.content
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=api_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as e:
+        logger.error(f"[chat_stream] API call failed: {e}", exc_info=True)
+        raise RuntimeError(f"DeepSeek API 调用失败: {e}") from e
 
 
 async def chat_sync(messages: list, model: str = "deepseek-v4-pro", temperature: float = 0.3,
@@ -109,8 +113,12 @@ async def chat_sync(messages: list, model: str = "deepseek-v4-pro", temperature:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
-    response = await client.chat.completions.create(**kwargs)
-    return response.choices[0].message
+    try:
+        response = await client.chat.completions.create(**kwargs)
+        return response.choices[0].message
+    except Exception as e:
+        logger.error(f"[chat_sync] API call failed: {e}", exc_info=True)
+        raise RuntimeError(f"DeepSeek API 调用失败: {e}") from e
 
 
 # ── Token 管理 ────────────────────────────────────────────
@@ -206,8 +214,8 @@ def ensure_token_budget(messages: list, budget: int = TOKEN_BUDGET) -> list:
 
     策略：
     1. 总数 <= 预算 → 直接返回
-    2. 总数 > 预算 → LLM 摘要压缩前半段历史（保留最近 3 条原文）
-    3. 摘要后仍超出 → 硬截断最旧消息
+    2. 总数 > 预算 → 从头部硬截断旧消息
+    3. 截断后只剩 1 条仍超出 → 截断该消息的 content 字段
     """
     total = count_tokens(messages)
     if total <= budget:
@@ -215,10 +223,15 @@ def ensure_token_budget(messages: list, budget: int = TOKEN_BUDGET) -> list:
 
     logger.info(f"Token budget exceeded: {total} > {budget}, compressing...")
 
-    # 压缩前半段历史
-    compressed = messages  # summarize_history is async, handled by caller
-    while count_tokens(compressed) > budget and len(compressed) > 2:
-        compressed = compressed[1:]  # 硬截断最旧消息
+    compressed = list(messages)
+    while count_tokens(compressed) > budget and len(compressed) > 1:
+        compressed = compressed[1:]
+
+    # 最后手段：截断最后一条消息的 content
+    if count_tokens(compressed) > budget and len(compressed) == 1:
+        msg = compressed[0]
+        if hasattr(msg, 'content') and isinstance(msg.content, str):
+            msg.content = msg.content[:budget * 3]  # ~3 chars per token
 
     logger.info(f"Token budget met: {count_tokens(compressed)} tokens after compression")
     return compressed

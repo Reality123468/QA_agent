@@ -43,8 +43,29 @@ class BGE_M3_Embedder:
     """Wraps sentence-transformers BGE-M3 to expose embed_documents / embed_query."""
 
     def __init__(self):
+        import os as _os
+        # Force offline mode for all HF libraries
+        for _key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
+            _os.environ[_key] = "1"
+
+        # Check that model files exist locally before attempting load
+        cache = _os.path.join(_os.path.expanduser("~"), ".cache", "huggingface", "hub",
+                              "models--BAAI--bge-m3", "snapshots")
+        has_config = False
+        if _os.path.isdir(cache):
+            for _d in _os.listdir(cache):
+                _p = _os.path.join(cache, _d, "config.json")
+                if _os.path.isfile(_p):
+                    has_config = True
+                    break
+        if not has_config:
+            raise RuntimeError(
+                "BGE-M3 config files not cached (HuggingFace blocked). "
+                "Falling through to next embedder."
+            )
+
         from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer("BAAI/bge-m3", device="cpu")
+        self._model = SentenceTransformer("BAAI/bge-m3", device="cpu", local_files_only=True)
         self._dim = self._model.get_embedding_dimension()
 
     @property
@@ -77,18 +98,7 @@ def get_embedder():
     if _embedder is not None:
         return _embedder
 
-    # Attempt 1: BGE-M3 (local, 1024-dim)
-    try:
-        e = BGE_M3_Embedder()
-        _embedder = e
-        _provider = "bge-m3"
-        _vector_size = e.dim
-        logger.info("Embedder initialized: BGE-M3 (BAAI/bge-m3, dim=%d)", e.dim)
-        return _embedder
-    except Exception as e:
-        logger.warning("BGE-M3 init failed: %s", e)
-
-    # Attempt 2: DeepSeek API via OpenAIEmbeddings
+    # Attempt 1: DeepSeek API via OpenAIEmbeddings (fast, accessible from China)
     try:
         from langchain_openai import OpenAIEmbeddings
 
@@ -106,23 +116,24 @@ def get_embedder():
     except Exception as e:
         logger.warning("DeepSeek OpenAIEmbeddings init failed: %s", e)
 
-    # Attempt 3: HuggingFace all-MiniLM-L6-v2
-    try:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+    # Attempt 2: BGE-M3 local (1024-dim)
+    # NOTE: skipped when HuggingFace is blocked (model loads but encode hangs due to
+    # transformers background HTTP checks). Uncomment when HF is accessible.
+    # try:
+    #     e = BGE_M3_Embedder()
+    #     import concurrent.futures as _cf
+    #     with _cf.ThreadPoolExecutor(max_workers=1) as _exec:
+    #         _future = _exec.submit(e.embed_query, "test")
+    #         _future.result(timeout=10)
+    #     _embedder = e
+    #     _provider = "bge-m3"
+    #     _vector_size = e.dim
+    #     logger.info("Embedder initialized: BGE-M3 (BAAI/bge-m3, dim=%d)", e.dim)
+    #     return _embedder
+    # except Exception as e:
+    #     logger.warning("BGE-M3 init failed: %s", e)
 
-        _embedder = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-        _provider = "huggingface"
-        _vector_size = 384
-        logger.info("Embedder initialized: HuggingFace all-MiniLM-L6-v2 (dim=384)")
-        return _embedder
-    except Exception as e:
-        logger.warning("HuggingFace embedder init failed: %s", e)
-
-    # Attempt 4: sklearn HashingVectorizer (guaranteed fallback)
+    # Attempt 3: sklearn HashingVectorizer (guaranteed fallback)
     _embedder = SklearnHashEmbedder(n_features=384)
     _provider = "sklearn"
     _vector_size = 384

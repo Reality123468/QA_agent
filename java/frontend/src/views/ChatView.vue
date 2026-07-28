@@ -4,7 +4,7 @@
     <div class="chat-body">
       <ConversationList />
       <div class="chat-main">
-        <MessageList :messages="chat.messages" />
+        <MessageList :messages="chat.messages" @feedback="(id, fb) => chat.submitFeedback(id, fb)" />
         <div class="mode-bar">
           <el-radio-group v-model="mode" size="small" :disabled="chat.isStreaming">
             <el-radio-button value="agent">Agent 推理</el-radio-button>

@@ -20,8 +20,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResult<Void>> handleBusinessException(BusinessException e) {
         log.warn("Business exception: {}", e.getMessage());
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(ApiResult.error(e.getErrorCode()));
+        HttpStatus status = switch (e.getErrorCode().getCode()) {
+            case 4003 -> HttpStatus.FORBIDDEN;
+            case 4004 -> HttpStatus.NOT_FOUND;
+            default -> HttpStatus.BAD_REQUEST;
+        };
+        return ResponseEntity.status(status).body(ApiResult.error(e.getErrorCode()));
     }
 
     @ExceptionHandler(AccessDeniedException.class)

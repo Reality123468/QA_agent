@@ -1,7 +1,6 @@
 package com.qa.chat.controller;
 
-import com.qa.auth.entity.SysUser;
-import com.qa.auth.repository.UserRepository;
+import com.qa.common.UserPrincipal;
 import com.qa.chat.dto.ChatRequest;
 import com.qa.chat.dto.ChatResponse;
 import com.qa.chat.service.ChatService;
@@ -19,23 +18,17 @@ import reactor.core.publisher.Flux;
 public class ChatController {
 
     private final ChatService chatService;
-    private final UserRepository userRepository;
 
-    public ChatController(ChatService chatService, UserRepository userRepository) {
+    public ChatController(ChatService chatService) {
         this.chatService = chatService;
-        this.userRepository = userRepository;
     }
 
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ChatResponse> chatStream(@Valid @RequestBody ChatRequest request, Authentication auth) {
-        Long userId = (Long) auth.getDetails();
-        String username = auth.getName();
+        UserPrincipal principal = (UserPrincipal) auth.getDetails();
         String role = auth.getAuthorities().iterator().next().getAuthority();
 
-        String department = userRepository.findByUsername(username)
-                .map(SysUser::getDepartment)
-                .orElse("全部");
-
-        return chatService.chatStream(request, String.valueOf(userId), role, department);
+        return chatService.chatStream(request, String.valueOf(principal.getUserId()),
+                role, principal.getDepartment());
     }
 }

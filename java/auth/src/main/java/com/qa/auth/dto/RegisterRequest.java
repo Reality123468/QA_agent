@@ -18,14 +18,17 @@ public class RegisterRequest {
 
     private String department;
 
+    private String position;
+
     public RegisterRequest() {
     }
 
-    public RegisterRequest(String username, String password, String email, String department) {
+    public RegisterRequest(String username, String password, String email, String department, String position) {
         this.username = username;
         this.password = password;
         this.email = email;
         this.department = department;
+        this.position = position;
     }
 
     public String getUsername() {
@@ -58,5 +61,13 @@ public class RegisterRequest {
 
     public void setDepartment(String department) {
         this.department = department;
+    }
+
+    public String getPosition() {
+        return position;
+    }
+
+    public void setPosition(String position) {
+        this.position = position;
     }
 }

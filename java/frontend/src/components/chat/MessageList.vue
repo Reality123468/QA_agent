@@ -7,6 +7,7 @@
       v-for="msg in messages"
       :key="msg.id"
       :message="msg"
+      @feedback="(id, fb) => $emit('feedback', id, fb)"
     />
   </div>
 </template>
@@ -18,6 +19,10 @@ import MessageBubble from './MessageBubble.vue'
 
 const props = defineProps<{
   messages: ChatMessage[]
+}>()
+
+defineEmits<{
+  feedback: [messageId: string, feedback: string]
 }>()
 
 const listRef = ref<HTMLElement>()

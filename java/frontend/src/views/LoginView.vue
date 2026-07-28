@@ -76,6 +76,14 @@
                 <el-option label="全部" value="全部" />
               </el-select>
             </el-form-item>
+            <el-form-item label="职位" prop="position">
+              <el-select v-model="registerForm.position" placeholder="请选择职位" class="w-full">
+                <el-option label="普通员工" value="普通员工" />
+                <el-option label="部门主管" value="部门主管" />
+                <el-option label="人事专员" value="人事专员" />
+                <el-option label="部门经理" value="部门经理" />
+              </el-select>
+            </el-form-item>
             <el-form-item>
               <el-button
                 type="primary"
@@ -121,7 +129,8 @@ const registerForm = reactive({
   password: '',
   confirmPassword: '',
   email: '',
-  department: ''
+  department: '',
+  position: ''
 })
 
 const loginRules: FormRules = {
@@ -180,7 +189,8 @@ async function handleRegister() {
       registerForm.username,
       registerForm.password,
       registerForm.email,
-      registerForm.department
+      registerForm.department,
+      registerForm.position
     )
     ElMessage.success('注册成功，请登录')
     activeTab.value = 'login'

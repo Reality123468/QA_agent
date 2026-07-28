@@ -13,8 +13,8 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # 全局 BM25 索引状态
-# corpus: (doc_id, chunk_index, title, text, doc_type)
-_corpus: List[Tuple[int, int, str, str, str]] = []
+# corpus: (doc_id, chunk_index, title, text, doc_type, department, security_level)
+_corpus: List[Tuple[int, int, str, str, str, str, str]] = []
 _bm25_model = None  # BM25Okapi 实例
 _tokenized_corpus: List[List[str]] = []  # 分词后的语料
 
@@ -42,7 +42,7 @@ def _rebuild_model():
 
     from rank_bm25 import BM25Okapi
 
-    _tokenized_corpus = [_tokenize(text) for _, _, _, text, _ in _corpus]
+    _tokenized_corpus = [_tokenize(text) for _, _, _, text, _, _, _ in _corpus]
     _bm25_model = BM25Okapi(_tokenized_corpus)
     logger.info(f"BM25 index rebuilt: {len(_corpus)} documents")
 
@@ -59,6 +59,8 @@ def add_texts(texts: List[dict]):
         _corpus.append((
             t["doc_id"], t["chunk_index"], t["title"], t["text"],
             t.get("doc_type", "general"),
+            t.get("department", "全部"),
+            t.get("security_level", "内部"),
         ))
 
     _rebuild_model()
@@ -106,6 +108,8 @@ def rebuild_from_qdrant(client):
                 p.payload.get("title", ""),
                 p.payload.get("text", ""),
                 p.payload.get("doc_type", "general"),
+                p.payload.get("department", "全部"),
+                p.payload.get("security_level", "内部"),
             )
             for p in all_points
         ]
@@ -115,7 +119,13 @@ def rebuild_from_qdrant(client):
         logger.warning(f"Failed to rebuild BM25 from Qdrant: {e}")
 
 
-def search(query: str, top_k: int = 20, category: str = "all") -> List[Tuple[int, float]]:
+def search(
+    query: str,
+    top_k: int = 20,
+    category: str = "all",
+    department: str = "全部",
+    security_level: str = "内部",
+) -> List[Tuple[int, float]]:
     """
     BM25 关键词检索。
 
@@ -123,6 +133,8 @@ def search(query: str, top_k: int = 20, category: str = "all") -> List[Tuple[int
         query: 搜索查询
         top_k: 返回结果数
         category: 文档类型过滤 (all/policy/tech_doc/general)
+        department: 部门过滤
+        security_level: 密级过滤（"内部" 排除 "机密" 文档）
 
     Returns:
         List of (corpus_index, bm25_score), sorted by score descending
@@ -134,13 +146,24 @@ def search(query: str, top_k: int = 20, category: str = "all") -> List[Tuple[int
     tokenized_query = _tokenize(query)
     scores = _bm25_model.get_scores(tokenized_query)
 
-    # 按分数降序，可选 category 过滤
+    # 按分数降序，可选 category / department / security_level 过滤
     indexed_scores = list(enumerate(scores))
     if category != "all":
         indexed_scores = [
             (i, s) for i, s in indexed_scores
             if _corpus[i][4] == category
         ]
+    if department != "全部":
+        indexed_scores = [
+            (i, s) for i, s in indexed_scores
+            if _corpus[i][5] in (department, "全部")
+        ]
+    if security_level == "内部":
+        indexed_scores = [
+            (i, s) for i, s in indexed_scores
+            if _corpus[i][6] != "机密"
+        ]
+
     indexed_scores.sort(key=lambda x: x[1], reverse=True)
 
     logger.info(
@@ -154,13 +177,15 @@ def search(query: str, top_k: int = 20, category: str = "all") -> List[Tuple[int
 def get_corpus_item(index: int) -> Optional[dict]:
     """根据索引获取语料项元数据"""
     if 0 <= index < len(_corpus):
-        doc_id, chunk_index, title, text, doc_type = _corpus[index]
+        doc_id, chunk_index, title, text, doc_type, department, security_level = _corpus[index]
         return {
             "doc_id": doc_id,
             "chunk_index": chunk_index,
             "title": title,
             "text": text,
             "doc_type": doc_type,
+            "department": department,
+            "security_level": security_level,
         }
     return None
 

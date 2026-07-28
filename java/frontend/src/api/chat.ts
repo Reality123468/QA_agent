@@ -16,6 +16,7 @@ export interface MessageDto {
   content: string
   citations: any[]
   agentSteps: any[]
+  feedback?: string
   timestamp: string
 }
 
@@ -37,6 +38,20 @@ export async function getMessages(conversationId: number): Promise<MessageDto[]>
   const json = await res.json()
   if (json.code !== 200) throw new Error(json.message || '加载消息失败')
   return json.data
+}
+
+export async function submitFeedback(messageId: number, feedback: string): Promise<void> {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`/api/chat/conversations/messages/${messageId}/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': token ? `Bearer ${token}` : ''
+    },
+    body: JSON.stringify({ feedback })
+  })
+  const json = await res.json()
+  if (json.code !== 200) throw new Error(json.message || '提交反馈失败')
 }
 
 export async function deleteConversation(conversationId: number): Promise<void> {

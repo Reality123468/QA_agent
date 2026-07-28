@@ -74,7 +74,14 @@ async def agent_node(state: AgentState) -> dict[str, Any]:
     if token_count > TOKEN_BUDGET:
         logger.info(f"[AgentNode] token budget exceeded ({token_count} > {TOKEN_BUDGET}), summarizing history...")
         SystemMessage_cls = SystemMessage
-        messages = await summarize_history(messages)
+        try:
+            messages = await asyncio.wait_for(
+                summarize_history(messages),
+                timeout=30,
+            )
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"[AgentNode] History summarization failed ({e}), falling back to truncation")
+            messages = list(messages)
         # summarize_history 返回 [系统摘要, ...最近消息]，前面插入 Agent system prompt
         messages = [SystemMessage_cls(content=AGENT_SYSTEM_PROMPT)] + list(messages)
         messages = ensure_token_budget(messages)
@@ -94,6 +101,10 @@ async def agent_node(state: AgentState) -> dict[str, Any]:
     except asyncio.TimeoutError:
         logger.error(f"[AgentNode] LLM call timed out after {AGENT_LLM_TIMEOUT}s")
         return {"messages": [AIMessage(content="AI 推理超时，请简化问题后重试。")]}
+    except Exception as e:
+        error_msg = str(e) if str(e) else type(e).__name__
+        logger.error(f"[AgentNode] LLM call failed: {error_msg}", exc_info=True)
+        return {"messages": [AIMessage(content=f"AI 服务暂时不可用 ({error_msg[:100]})，请稍后重试。")]}
 
     ai_message = AIMessage(
         content=response.content or "",
@@ -150,9 +161,10 @@ async def tools_node(state: AgentState) -> dict[str, Any]:
                     name=tool_name,
                 ))
             except Exception as e:
-                logger.error(f"[ToolsNode] {tool_name} failed: {e}")
+                error_msg = str(e) if str(e) else type(e).__name__
+                logger.error(f"[ToolsNode] {tool_name} failed: {error_msg}", exc_info=True)
                 tool_messages.append(ToolMessage(
-                    content=f"工具调用失败: {str(e)}",
+                    content=f"工具 {tool_name} 调用失败: {error_msg[:200]}",
                     tool_call_id=tool_call_id,
                     name=tool_name,
                 ))

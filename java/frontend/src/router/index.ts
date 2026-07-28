@@ -22,7 +22,7 @@ const routes: RouteRecordRaw[] = [
     path: '/documents',
     name: 'Documents',
     component: () => import('@/views/DocumentsView.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, requiresNotEmployee: true }
   },
   {
     path: '/audit',
@@ -42,6 +42,8 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.requiresAuth !== false && !auth.isAuthenticated) {
     next('/login')
   } else if (to.meta.requiresAdmin && !auth.isAdmin) {
+    next('/chat')
+  } else if (to.meta.requiresNotEmployee && auth.isEmployee) {
     next('/chat')
   } else {
     next()

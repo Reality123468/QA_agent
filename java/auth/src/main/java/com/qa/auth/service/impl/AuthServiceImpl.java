@@ -36,12 +36,13 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ErrorCode.USERNAME_OR_PASSWORD_ERROR);
         }
 
-        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
+        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole(), user.getDepartment());
         return LoginResponse.builder()
                 .token(token)
                 .username(user.getUsername())
                 .role(user.getRole())
                 .department(user.getDepartment())
+                .position(user.getPosition())
                 .build();
     }
 
@@ -51,14 +52,26 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ErrorCode.USERNAME_EXISTS);
         }
 
+        String role = mapPositionToRole(request.getPosition());
         SysUser user = SysUser.builder()
                 .username(request.getUsername())
                 .password(passwordEncoder.encode(request.getPassword()))
                 .email(request.getEmail())
                 .department(request.getDepartment())
-                .role("ROLE_EMPLOYEE")
+                .role(role)
+                .position(request.getPosition())
                 .build();
 
         userRepository.save(user);
+    }
+
+    private String mapPositionToRole(String position) {
+        if (position == null) return "ROLE_EMPLOYEE";
+        return switch (position) {
+            case "部门经理" -> "ROLE_ADMIN";
+            case "部门主管" -> "ROLE_LEADER";
+            case "人事专员" -> "ROLE_HR";
+            default -> "ROLE_EMPLOYEE";
+        };
     }
 }

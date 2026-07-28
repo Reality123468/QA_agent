@@ -1,3 +1,8 @@
+import os as _os
+# BGE-M3 is pre-downloaded; HuggingFace is blocked from China — skip all HF HTTP checks
+for _key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
+    _os.environ[_key] = "1"
+
 import logging
 from pathlib import Path
 
@@ -28,7 +33,28 @@ app.include_router(agent_routes.router, prefix="/api/agent", tags=["agent"])
 
 @app.on_event("startup")
 async def startup_event():
+    import asyncio
     logger.info("QA Agent Python service starting up...")
+    try:
+        from rag import get_qdrant_client
+        from rag import bm25_index
+        qdrant = get_qdrant_client()
+        bm25_index.rebuild_from_qdrant(qdrant)
+    except Exception as e:
+        logger.warning(f"BM25 rebuild on startup failed (non-fatal): {e}")
+
+    # Pre-warm embedder so first request doesn't block on model download
+    try:
+        from rag.embedder import get_embedder
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(
+            loop.run_in_executor(None, get_embedder),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Embedder pre-warm timed out after 60s (BGE-M3 download may be slow)")
+    except Exception as e:
+        logger.warning(f"Embedder pre-warm failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
