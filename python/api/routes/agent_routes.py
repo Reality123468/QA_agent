@@ -30,7 +30,11 @@ async def index_document_route(request: IndexRequest, api_key: str = Depends(ver
     """将文档索引到 Qdrant 向量数据库"""
     try:
         progress_url = request.progress_url
-        index_document(request.document.model_dump(), progress_url=progress_url)
+        # 放入线程池执行：避免阻塞事件循环，同时让 OCR 模块内部
+        # 可安全使用 asyncio.run() 驱动 MCP 客户端（需运行在非事件循环线程）
+        await asyncio.to_thread(
+            index_document, request.document.model_dump(), progress_url=progress_url
+        )
         return {"status": "completed", "doc_id": request.document.id}
     except Exception as e:
         logger.error(f"Index failed: {e}", exc_info=True)
@@ -41,7 +45,7 @@ async def index_document_route(request: IndexRequest, api_key: str = Depends(ver
 async def delete_document_route(doc_id: int, api_key: str = Depends(verify_api_key)):
     """删除文档在 Qdrant 中的所有向量 chunks"""
     try:
-        delete_document_chunks(doc_id)
+        await asyncio.to_thread(delete_document_chunks, doc_id)
         return {"status": "deleted", "doc_id": doc_id}
     except Exception as e:
         logger.error(f"Delete failed: {e}", exc_info=True)

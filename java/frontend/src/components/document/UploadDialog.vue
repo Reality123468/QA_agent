@@ -17,14 +17,14 @@
           :on-change="handleFileChange"
           :on-remove="handleFileRemove"
           :before-upload="beforeUpload"
-          accept=".pdf,.md,.txt,.docx"
+          accept=".pdf,.md,.txt,.docx,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp"
           drag
         >
           <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
           <div class="el-upload__text">拖拽文件至此或点击上传</div>
           <template #tip>
             <div class="el-upload__tip">
-              支持 PDF / MD / TXT / DOCX，≤ 50MB
+              支持 PDF / MD / TXT / DOCX 及图片（JPG/PNG 等，自动 OCR），≤ 50MB
             </div>
           </template>
         </el-upload>
@@ -87,13 +87,13 @@ const form = reactive({
 
 let selectedFile: File | null = null
 
-const ALLOWED_TYPES = ['pdf', 'md', 'txt', 'docx']
+const ALLOWED_TYPES = ['pdf', 'md', 'txt', 'docx', 'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff', 'webp']
 const MAX_SIZE = 50 * 1024 * 1024
 
 function beforeUpload(file: File): boolean {
   const ext = file.name.split('.').pop()?.toLowerCase() || ''
   if (!ALLOWED_TYPES.includes(ext)) {
-    ElMessage.error('不支持的文件类型，仅支持 PDF / MD / TXT / DOCX')
+    ElMessage.error('不支持的文件类型，仅支持 PDF / MD / TXT / DOCX 及图片')
     return false
   }
   if (file.size > MAX_SIZE) {

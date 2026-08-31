@@ -1,7 +1,7 @@
 # 企业内部规章制度与技术文档智能问答系统 — API 接口文档
 
-**文档版本**：v1.1
-**编制日期**：2026-07-25
+**文档版本**：v1.2
+**编制日期**：2026-08-31
 **关联文档**：企业内部规章制度与技术文档智能问答系统 PRD.md (v4.1)
 
 ---
@@ -223,11 +223,15 @@ Content-Type: multipart/form-data
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `file` | file | 是 | 文件，支持 pdf/docx/md/txt，最大 20MB |
+| `file` | file | 是 | 文件，支持 pdf/docx/md/txt 及图片（png/jpg/jpeg/bmp/tif/tiff/webp），最大 50MB |
 | `title` | string | 是 | 文档标题，1-200 字符 |
 | `department` | string | 是 | 所属部门 |
 | `securityLevel` | string | 是 | 密级：`公开` / `内部` / `机密` |
 | `tags` | string | 否 | 标签，逗号分隔，如 "API,登录,认证" |
+
+> **OCR 说明**：图片文件与扫描版 PDF（无文本层）在上传并触发索引后，由 Python 服务通过
+> PaddleOCR-VL MCP（`paddleocr_vl` 工具）自动进行版面解析/文字识别，识别结果进入 RAG 知识库；
+> 含文本层的 PDF/MD/TXT/DOCX 走原解析逻辑，不受影响。
 
 **权限**：所有登录用户
 
@@ -259,7 +263,7 @@ Content-Type: multipart/form-data
 ```json
 {
   "code": 2001,
-  "message": "不支持的文件类型，仅支持 PDF、Word、Markdown、TXT",
+  "message": "不支持的文件类型，仅支持 PDF、Word、Markdown、TXT 及图片",
   "data": null,
   "timestamp": "2026-07-20T14:30:12+08:00"
 }
@@ -546,6 +550,11 @@ Accept: text/event-stream
 3. Java 透传 Python 返回的 SSE 流给前端
 4. 流结束后 Java 保存 conversation、message 和 audit_log 到 MySQL
 
+> **认证说明**：`/api/chat/stream` 为 SSE 长连接（Tomcat 异步分发），为保证流式响应不被
+> Security 异步拦截，该端点安全链上配置为 permitAll，登录态由 `JwtAuthFilter` 注入、
+> 控制器显式校验。携带有效 token 时正常返回 SSE 流；token 缺失/无效时仍返回 HTTP 200，
+> 但流内容为 `{"type":"error","content":"未登录或登录已过期，请重新登录"}` 事件。
+
 **SSE 事件流格式**（仅 `data:` 行，无 `event:` 前缀）：
 
 ```
@@ -777,17 +786,21 @@ X-Trace-Id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 | `document.id` | int | 是 | 文档 ID（对应 MySQL doc_document 记录） |
 | `document.title` | string | 是 | 文档标题 |
 | `document.file_path` | string | 是 | MinIO 文件路径 |
-| `document.file_type` | string | 是 | 文件类型（pdf/docx/md/txt） |
+| `document.file_type` | string | 是 | 文件类型（pdf/docx/md/txt/png/jpg/jpeg/bmp/tif/tiff/webp） |
 | `document.department` | string | 是 | 所属部门（写入 chunk payload） |
 | `document.security_level` | string | 是 | 密级（公开/内部/机密） |
 
 **处理流程**：
 
 1. 从 MinIO 下载文件
-2. 根据 `file_type` 选择对应的 DocumentLoader 和 TextSplitter
+2. 按 `file_type` 加载文档：图片与扫描版 PDF 经 **PaddleOCR-VL MCP**（`paddleocr_vl` 工具）识别为 Markdown 文本；含文本层的 PDF/MD/TXT/DOCX 走原解析逻辑
 3. 分块 + Embedding 向量化（三级降级策略）
 4. 写入 Qdrant（vector + payload: doc_id/title/department/security_level/chunk_index）
 5. 回调 Java 更新文档状态
+
+> 索引接口本身无需改动；OCR 通过 Python 侧 `PADDLEOCR_MCP_*` 系列环境变量配置
+> （模型 `PADDLEOCR_MCP_MODEL=PaddleOCR-VL-1.6`、后端 `PADDLEOCR_MCP_PPOCR_SOURCE=aistudio`、
+> 令牌 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`）。
 
 **成功响应** (200)：
 
@@ -951,7 +964,7 @@ Python 回调 / WebSocket 推送
 | **Java→Python 认证** | `X-API-Key` 预共享密钥（环境变量 `AGENT_INTERNAL_API_KEY`） |
 | **密码存储** | bcrypt 哈希（cost=12） |
 | **密码规则** | 8-32 字符，至少含大写字母、小写字母、数字 |
-| **文件上传** | 类型白名单 + 大小限制 20MB + 病毒扫描（可选） |
+| **文件上传** | 类型白名单（pdf/md/txt/docx + 图片）+ 大小限制 50MB + 病毒扫描（可选） |
 | **SQL 注入** | Spring Data JPA 参数化查询 |
 | **XSS** | 前端输出转义 + Content-Security-Policy Header |
 | **CORS** | 仅允许前端域名跨域 |

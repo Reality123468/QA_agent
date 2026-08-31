@@ -90,15 +90,32 @@ def get_embedder():
     Fallback chain (first successful init wins):
       1. BGE-M3 local (1024-dim) — best Chinese semantic quality, zero cost
       2. DeepSeek API via OpenAIEmbeddings (1536-dim) — requires valid API key
-      3. HuggingFace all-MiniLM-L6-v2 (384-dim) — lightweight local fallback
-      4. sklearn HashingVectorizer (384-dim) — guaranteed, no dependencies
+      3. sklearn HashingVectorizer (384-dim) — guaranteed, no dependencies
     """
     global _embedder, _provider, _vector_size
 
     if _embedder is not None:
         return _embedder
 
-    # Attempt 1: DeepSeek API via OpenAIEmbeddings (fast, accessible from China)
+    # Attempt 1: BGE-M3 local (1024-dim)
+    # 模型已预下载到本机 HF cache，通过 D:/python-packages 便携安装提供
+    # sentence-transformers/torch；离线模式下 encode 不会因 HF 网络检查挂起。
+    try:
+        e = BGE_M3_Embedder()
+        import concurrent.futures as _cf
+
+        with _cf.ThreadPoolExecutor(max_workers=1) as _exec:
+            _future = _exec.submit(e.embed_query, "test")
+            _future.result(timeout=30)
+        _embedder = e
+        _provider = "bge-m3"
+        _vector_size = e.dim
+        logger.info("Embedder initialized: BGE-M3 (BAAI/bge-m3, dim=%d)", e.dim)
+        return _embedder
+    except Exception as e:
+        logger.warning("BGE-M3 init failed: %s", e)
+
+    # Attempt 2: DeepSeek API via OpenAIEmbeddings (fast, accessible from China)
     try:
         from langchain_openai import OpenAIEmbeddings
 
@@ -115,23 +132,6 @@ def get_embedder():
         return _embedder
     except Exception as e:
         logger.warning("DeepSeek OpenAIEmbeddings init failed: %s", e)
-
-    # Attempt 2: BGE-M3 local (1024-dim)
-    # NOTE: skipped when HuggingFace is blocked (model loads but encode hangs due to
-    # transformers background HTTP checks). Uncomment when HF is accessible.
-    # try:
-    #     e = BGE_M3_Embedder()
-    #     import concurrent.futures as _cf
-    #     with _cf.ThreadPoolExecutor(max_workers=1) as _exec:
-    #         _future = _exec.submit(e.embed_query, "test")
-    #         _future.result(timeout=10)
-    #     _embedder = e
-    #     _provider = "bge-m3"
-    #     _vector_size = e.dim
-    #     logger.info("Embedder initialized: BGE-M3 (BAAI/bge-m3, dim=%d)", e.dim)
-    #     return _embedder
-    # except Exception as e:
-    #     logger.warning("BGE-M3 init failed: %s", e)
 
     # Attempt 3: sklearn HashingVectorizer (guaranteed fallback)
     _embedder = SklearnHashEmbedder(n_features=384)

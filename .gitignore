@@ -1,12 +1,14 @@
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 .venv/
 venv/
 .idea/
 *.iml
 .vscode/
 *.log
+java/chat/logs-*.txt
 .env
 *.egg-info/
 dist/

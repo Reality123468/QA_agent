@@ -12,7 +12,8 @@
 | 向量数据库 | Qdrant (Docker) |
 | 文件存储 | MinIO (Docker) |
 | 数据库 | MySQL 8.0 |
-| LLM | DeepSeek API (Chat + Embedding) |
+| LLM | DeepSeek API（对话/推理；嵌入回退链 BGE-M3 本地 → DeepSeek → sklearn） |
+| OCR | PaddleOCR-VL-1.6（MCP 接入，AI Studio / 千帆 / 本地推理） |
 | 反向代理 | Nginx (Docker) |
 
 ## 系统架构
@@ -169,7 +170,7 @@ npm run dev                        # 端口 5173
 
 1. 打开浏览器访问前端页面
 2. 注册账号并登录
-3. 在「文档管理」页面上传 PDF/DOCX/MD/TXT 文档
+3. 在「文档管理」页面上传 PDF/DOCX/MD/TXT 文档（或图片/扫描版 PDF，自动 OCR 识别后入库）
 4. 等待索引状态变为「已完成」（WebSocket 实时推送进度）
 5. 在「智能问答」页面选择对话模式提问：
    - **RAG 模式**：快速检索 + 生成回答

@@ -17,7 +17,7 @@ COLLECTION_NAME = "qa_documents"
 
 
 def _ensure_collection(client):
-    """确保 collection 存在"""
+    """确保 collection 存在且向量维度与当前 embedder 一致"""
     vector_size = get_vector_size()
     collections = client.get_collections()
     collection_names = [c.name for c in collections.collections]
@@ -27,8 +27,27 @@ def _ensure_collection(client):
             vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
         )
         logger.info(f"Created Qdrant collection '{COLLECTION_NAME}' with vector_size={vector_size}")
+        return
+
+    existing = client.get_collection(COLLECTION_NAME)
+    existing_size = existing.config.params.vectors.size
+    if existing_size != vector_size:
+        # embedder 变化导致维度不匹配：旧向量已无法使用，重建集合自愈。
+        # （例如 BGE-M3 不可用时降级到 384 维，Qdrant 会拒绝写入导致索引/检索静默失败）
+        logger.error(
+            f"Collection '{COLLECTION_NAME}' vector_size={existing_size} != "
+            f"current embedder vector_size={vector_size}; recreating collection "
+            f"(old vectors are incompatible with current embedder)"
+        )
+        client.delete_collection(COLLECTION_NAME)
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+        logger.info(f"Recreated collection '{COLLECTION_NAME}' with vector_size={vector_size}")
+        bm25_index.rebuild_from_qdrant(client)
     else:
-        logger.info(f"Collection '{COLLECTION_NAME}' already exists")
+        logger.info(f"Collection '{COLLECTION_NAME}' already exists (vector_size={vector_size})")
 
 
 def _send_progress(progress_url: Optional[str], doc_id: int, status: str, message: str):
@@ -78,8 +97,11 @@ def index_document(doc_info: dict, progress_url: Optional[str] = None) -> None:
     # 2. 如果文档之前索引过，先删除旧 chunks
     _delete_doc_chunks(client, doc_id)
 
-    # 3. 加载文档
-    _send_progress(progress_url, doc_id, "INDEXING", "正在加载文档...")
+    # 3. 加载文档（图片/扫描 PDF 会先经 PaddleOCR-VL 识别）
+    if file_type.lower() in {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"}:
+        _send_progress(progress_url, doc_id, "INDEXING", "正在进行 OCR 文字识别...")
+    else:
+        _send_progress(progress_url, doc_id, "INDEXING", "正在加载文档...")
     raw_docs = load_document(file_path, file_type)
 
     # 4. 分块

@@ -40,7 +40,10 @@ public class DocumentServiceImpl implements DocumentService {
     @Value("${minio.endpoint}")
     private String minioEndpoint;
 
-    private static final Set<String> ALLOWED_TYPES = Set.of("pdf", "md", "txt", "docx");
+    private static final Set<String> ALLOWED_TYPES = Set.of(
+            "pdf", "md", "txt", "docx",
+            "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"  // 图片/扫描件经 PaddleOCR-VL 识别
+    );
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024L; // 50MB
 
     public DocumentServiceImpl(DocumentRepository documentRepository,

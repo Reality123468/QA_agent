@@ -23,7 +23,7 @@ Browser (Vue 3 SPA, port 5173 dev / port 80 prod via Nginx)
 
 ### Key data flows
 
-1. **Document indexing:** User uploads file → Java Document saves to MinIO → calls Python `/api/agent/index` → Python downloads from MinIO, chunks, embeds, stores in Qdrant → Python POSTs progress to Java `/api/documents/index-progress/{docId}` → Java broadcasts via WebSocket to browser
+1. **Document indexing:** User uploads file → Java Document saves to MinIO → calls Python `/api/agent/index` → Python downloads from MinIO, loads (images & scanned PDFs go through PaddleOCR-VL MCP OCR first), chunks, embeds, stores in Qdrant → Python POSTs progress to Java `/api/documents/index-progress/{docId}` → Java broadcasts via WebSocket to browser
 2. **RAG chat (`mode=rag`):** Question → Java Chat → Python `/api/agent/chat/stream` → hybrid_search Qdrant → DeepSeek LLM generate → SSE stream (thinking → answer tokens → citations → done)
 3. **Agent chat (`mode=agent`):** Question → Java Chat → Python → LangGraph ReAct loop (agent_node ⇄ tools_node) → SSE stream (thought → action → observation → ... → answer tokens → done)
 4. **Search-only (`mode=search-only`):** Question → Java Chat → Python → hybrid_search Qdrant → SSE stream (thinking → citations → done), no LLM call
@@ -225,7 +225,7 @@ JPA `ddl-auto: update` auto-creates tables. Key tables:
 - CRLF/LF warnings on git operations are cosmetic and harmless
 - Chinese characters in curl requests may fail with `Invalid UTF-8 middle byte` on Windows — use `-d @file.json` with a temp file, or test via the frontend browser
 - When killing and restarting Python services, ensure old processes don't linger on the port (use `netstat -ano | grep :8000` to verify)
-- HuggingFace is blocked in China — Python AI must be started with `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` to skip HF HTTP checks. BGE-M3 model weights are cached locally but `encode()` hangs on first use due to transformers background network probes, so the embedder falls through to sklearn HashingVectorizer
+- HuggingFace is blocked in China — Python AI must be started with `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` to skip HF HTTP checks. BGE-M3 is the **primary embedder**: weights are cached locally, `sentence-transformers`/`torch` come from the portable install on `D:/python-packages` (auto-inserted into `sys.path`), and init validates `encode()` with a 30s `ThreadPoolExecutor` timeout to avoid hangs
 
 ## Project Structure
 
@@ -249,9 +249,10 @@ QA_agent/
 │   │   ├── nodes.py                    # agent_node (LLM + tool_calls), tools_node (ToolMessage execution)
 │   │   └── graph.py                    # StateGraph: agent → conditional_edge → tools → agent (loop)
 │   ├── rag/
-│   │   ├── loader.py                   # Downloads from MinIO/HTTP, loads PDF/MD/TXT/DOCX
+│   │   ├── loader.py                   # Downloads from MinIO/HTTP, loads PDF/MD/TXT/DOCX; images & scanned PDFs → OCR
+│   │   ├── ocr_mcp.py                  # PaddleOCR-VL MCP client (stdio) — paddleocr_vl tool → Markdown
 │   │   ├── splitter.py                 # Chunking (MD by headings, PDF/DOCX by size)
-│   │   ├── embedder.py                 # Embedding fallback: DeepSeek API → sklearn HashingVectorizer (BGE-M3 disabled: HF blocked)
+│   │   ├── embedder.py                 # Embedding fallback: BGE-M3 (1024-dim) → DeepSeek API (1536) → sklearn (384)
 │   │   ├── indexer.py                  # Qdrant upsert + HTTP progress callbacks to Java
 │   │   ├── retriever.py               # Hybrid search (BM25 + vector) with RRF fusion, department/security_level filters
 │   │   └── bm25_index.py              # BM25 keyword index rebuilt from Qdrant on startup
@@ -285,11 +286,21 @@ QA_agent/
 │           └── views/                  # ChatView, DocumentsView, AuditView (with batch delete), LoginView
 ```
 
+## OCR (PaddleOCR-VL MCP)
+
+Images (png/jpg/jpeg/bmp/tif/tiff/webp) and scanned PDFs (no text layer) are recognized via the PaddleOCR-VL MCP server (`paddleocr-mcp` package), tool `paddleocr_vl`, returning Markdown that then enters the normal chunk/embed/index pipeline.
+
+- **Module:** `python/rag/ocr_mcp.py` — starts `paddleocr_mcp` subprocess over MCP stdio, calls the `paddleocr_vl` tool with a local absolute path + `file_type` ("image"/"pdf").
+- **Detection:** `_is_scanned_pdf()` in `loader.py` uses PyMuPDF; if average chars/page < 20 (or total < 50) the PDF is treated as scanned and falls back to OCR. Text-layer PDFs keep the original `PyMuPDFLoader` path.
+- **Config (env vars):** `PADDLEOCR_MCP_MODEL` (default `PaddleOCR-VL-1.6`), `PADDLEOCR_MCP_PPOCR_SOURCE` (default `aistudio`), `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN` (required for aistudio). qianfan/self_hosted/local sources are supported via their respective env vars.
+- **Threading constraint:** the OCR module uses `asyncio.run()` internally, so `/api/agent/index` and `/api/agent/index/{id}` routes execute `index_document`/`delete_document_chunks` inside `asyncio.to_thread` (also prevents blocking the event loop).
+- **Graceful degradation:** if `paddleocr_mcp` is missing or credentials are unconfigured, `is_ocr_available()` returns False and image/scanned-PDF indexing fails with a clear `OcrUnavailableError`; regular documents are unaffected.
+
 ## RAG & Agent Pipeline Details
 
-- **Embedding:** 2-tier fallback — DeepSeek API (attempted first) → sklearn HashingVectorizer (384-dim, guaranteed). BGE-M3 is disabled (model loads but `encode()` hangs when HF is blocked in China). DeepSeek has no dedicated embedding endpoint (returns 404 on `deepseek-chat`). Result: current active embedder is sklearn.
+- **Embedding:** 3-tier fallback — BGE-M3 local (1024-dim; primary) → DeepSeek API via OpenAIEmbeddings (1536-dim) → sklearn HashingVectorizer (384-dim, guaranteed). BGE-M3 is loaded offline from the local HF cache (portable `D:/python-packages` install) and its `encode()` is smoke-tested under a 30s timeout before being activated. DeepSeek has no dedicated embedding endpoint (returns 404 on `deepseek-chat`), so its tier only activates if an OpenAI-compatible embedder is reachable.
 - **Chunking:** MD uses MarkdownHeaderTextSplitter by H2/H3 headings; PDF/TXT/DOCX uses RecursiveCharacterTextSplitter (800 char chunks, 150 overlap)
-- **Retrieval:** Hybrid BM25 (keyword) + Qdrant vector (semantic) dual-recall → RRF fusion. BM25 always works; vector search depends on embedder compatibility with stored vectors. `department` filter uses MatchAny(["Tech", "全部"]); `security_level` filter excludes "机密" for non-privileged users (ROLE_EMPLOYEE, ROLE_LEADER). Returns empty results gracefully if collection doesn't exist.
+- **Retrieval:** Hybrid BM25 (keyword) + Qdrant vector (semantic) dual-recall → RRF fusion. BM25 always works; vector search depends on embedder compatibility with stored vectors. `_ensure_collection()` in `indexer.py` checks the collection's `vector_size` against the current embedder on every index/delete — if they mismatch (e.g. embedder tier changed) it recreates the collection and rebuilds BM25, avoiding silent write failures. `department` filter uses MatchAny(["Tech", "全部"]); `security_level` filter excludes "机密" for non-privileged users (ROLE_EMPLOYEE, ROLE_LEADER). Returns empty results gracefully if collection doesn't exist.
 - **Reranker:** `rerank_listwise()` in `python/rag/reranker.py` — uses DeepSeek LLM to score and re-rank top-10 candidates down to top-5 before prompt construction.
 - **RAG prompt:** System prompt instructs LLM to answer only from reference docs, cite sources, admit gaps honestly
 - **Agent prompt:** Defines Thought→Action→Observation ReAct workflow with 3 tools. Emphasizes no fabrication, cite sources, refuse out-of-scope questions.
