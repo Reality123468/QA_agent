@@ -10,6 +10,7 @@ public class ChatRequest {
     private List<HistoryMessage> history;
     private String mode = "rag";
     private Long conversationId;
+    private String summary;
 
     public ChatRequest() {
     }
@@ -50,5 +51,13 @@ public class ChatRequest {
 
     public void setConversationId(Long conversationId) {
         this.conversationId = conversationId;
+    }
+
+    public String getSummary() {
+        return summary;
+    }
+
+    public void setSummary(String summary) {
+        this.summary = summary;
     }
 }

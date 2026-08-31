@@ -11,7 +11,8 @@ import logging
 from typing import Optional
 
 from langchain_core.tools import tool
-from rag.retriever import hybrid_search, get_document_chunks
+from rag.retriever import hybrid_search, get_document_chunks, get_chunk_by_id
+from agent.context import current_security_level
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,10 @@ def search_knowledge(query: str, category: str = "all", department: str = "全�
         category: 文档类别 — policy(规章制度) / tech_doc(技术文档) / all(全部)
         department: 用户所属部门，用于权限过滤，默认为"全部"
     """
-    logger.info(f"[Tool:search_knowledge] query='{query}', category='{category}', department='{department}'")
+    seclevel = current_security_level.get()
+    logger.info(f"[Tool:search_knowledge] query='{query}', category='{category}', department='{department}', seclevel='{seclevel}'")
     hits = hybrid_search(
-        query, department=department, security_level="内部",
+        query, department=department, security_level=seclevel,
         top_k=5, category=category,
     )
     if not hits:
@@ -48,27 +50,52 @@ def search_employee(query: str) -> str:
         query: 搜索关键词，如"技术部负责人"
     """
     logger.info(f"[Tool:search_employee] query='{query}'")
-    hits = hybrid_search(query, department="全部", security_level="内部", top_k=5)
+    seclevel = current_security_level.get()
+    hits = hybrid_search(query, department="全部", security_level=seclevel, top_k=5)
     if not hits:
         return "未找到相关人员信息。请确认查询关键词后重试，或联系管理员。"
     return _format_hits(hits)
 
 
 @tool
-def get_doc_detail(doc_id: int) -> str:
-    """获取指定文档的完整详细内容。当检索片段不足以回答用户问题，
-    需要查看文档全文时使用此工具。
+def get_doc_detail(doc_id: int, chunk_index: int = None) -> str:
+    """获取指定文档的内容。两步使用：
+    1. 仅传 doc_id：返回文档的章节索引（chunk 标题列表 + chunk_index 编号）
+    2. 传 doc_id + chunk_index：返回该 chunk 的完整文本内容
+
+    当检索片段不足以回答用户问题，或需要查看文档某章节详细内容时使用。
+    建议先获取章节索引，再根据需要拉取具体章节。
 
     Args:
         doc_id: 文档唯一ID（整数），从检索结果中获取
+        chunk_index: 可选，指定要获取的章节编号。不传则返回章节索引列表
     """
-    logger.info(f"[Tool:get_doc_detail] doc_id={doc_id}")
-    chunks = get_document_chunks(doc_id)
-    if not chunks:
-        return f"未找到文档 ID={doc_id} 的内容，文档可能已被删除。"
-    title = chunks[0].get("title", "未知文档")
-    full_text = "\n\n".join([c["text"] for c in chunks])
-    return f"文档《{title}》完整内容（共 {len(chunks)} 段）：\n\n{full_text[:3000]}"
+    seclevel = current_security_level.get()
+    logger.info(f"[Tool:get_doc_detail] doc_id={doc_id}, chunk_index={chunk_index}, seclevel='{seclevel}'")
+
+    if chunk_index is not None:
+        # ── Step 2: 返回单个 chunk 完整内容 ──
+        chunk = get_chunk_by_id(doc_id, chunk_index, security_level=seclevel)
+        if not chunk:
+            return f"未找到文档 ID={doc_id} 的章节 chunk_index={chunk_index}，该章节可能已被删除或权限不足。"
+        title = chunk.get("title", "未知文档")
+        heading = chunk.get("heading", "")
+        heading_label = f" (章节: {heading})" if heading else ""
+        return f"文档《{title}》{heading_label}\n\n{chunk['text']}"
+    else:
+        # ── Step 1: 返回章节索引 ──
+        chunks = get_document_chunks(doc_id, security_level=seclevel)
+        if not chunks:
+            return f"未找到文档 ID={doc_id} 的内容，文档可能已被删除或您无权查看。"
+        title = chunks[0].get("title", "未知文档")
+        lines = [f"文档《{title}》共 {len(chunks)} 个章节："]
+        for c in chunks:
+            ci = c.get("chunk_index", 0)
+            heading = c.get("heading", "")
+            preview = c.get("text", "")[:80].replace("\n", " ")
+            label = f" (章节: {heading})" if heading else ""
+            lines.append(f"  [chunk_index={ci}]{label} {preview}...")
+        return "\n".join(lines)
 
 
 def _format_hits(hits: list) -> str:

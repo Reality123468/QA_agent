@@ -1,12 +1,17 @@
 import json
 import asyncio
+import os
+import time
 import logging
 from typing import List, AsyncGenerator
 from rag.retriever import hybrid_search
 from rag.reranker import rerank_listwise
-from llm.deepseek_client import chat_stream, count_tokens, TOKEN_BUDGET
+from rag.query_rewriter import should_rewrite, rewrite_query
+from llm.deepseek_client import chat_stream, count_tokens, ensure_token_budget, summarize_history
 
 logger = logging.getLogger(__name__)
+
+RAG_TOKEN_BUDGET = int(os.getenv("RAG_TOKEN_BUDGET", "6000"))  # RAG 输入 token 预算
 
 RAG_PROMPT_TEMPLATE = """你是一名企业智能助手。请根据以下参考文档中的信息回答用户问题。
 
@@ -33,12 +38,19 @@ async def answer_with_rag(question: str, history: List[dict] = None,
 
     Yields: SSE 格式的字符串
     """
+    start_time = time.time()
+
     # Step 1: 思考提示
     yield f"data: {json.dumps({'type': 'thinking', 'content': '正在检索相关文档...'}, ensure_ascii=False)}\n\n"
 
+    # Step 1.5: 查询改写（省略追问 → 独立完整检索语句）
+    search_question = question
+    if should_rewrite(question):
+        search_question = await rewrite_query(question, history or [])
+
     # Step 2: 检索（Top-10 粗召回）
     hits = await asyncio.to_thread(
-        hybrid_search, question, department=department, security_level=security_level, top_k=10
+        hybrid_search, search_question, department=department, security_level=security_level, top_k=10
     )
 
     if not hits:
@@ -60,18 +72,29 @@ async def answer_with_rag(question: str, history: List[dict] = None,
 
     prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=question)
 
+    # 历史摘要压缩：超 10 轮或 token 逼近预算时触发
+    history_for_llm = history or []
+    if history and len(history) > 10:
+        from langchain_core.messages import HumanMessage as LCHumanMsg, AIMessage as LCAIMsg
+        role_map = {"user": LCHumanMsg, "assistant": LCAIMsg}
+        lc_history = [role_map[h["role"]](content=h["content"]) for h in history if h.get("role") in role_map]
+        compressed = await summarize_history(lc_history)
+        # 转回 dict 格式
+        history_for_llm = []
+        for m in compressed:
+            if hasattr(m, "type"):
+                role = {"human": "user", "ai": "assistant", "system": "system"}.get(m.type, "system")
+                history_for_llm.append({"role": role, "content": m.content or ""})
+
     messages = [{"role": "system", "content": prompt}]
-    if history:
-        messages = [{"role": "system", "content": prompt}] + history
+    if history_for_llm:
+        messages = [{"role": "system", "content": prompt}] + history_for_llm
     messages.append({"role": "user", "content": question})
 
-    # Token 预算检查：超限时裁剪 context 和历史
-    if count_tokens(messages) > TOKEN_BUDGET:
-        logger.info(f"[RAG] token budget exceeded, trimming context...")
-        # 裁剪历史（保留最近 4 条）和 context 片段
-        if history and len(history) > 4:
-            history = history[-4:]
-        # 减少 context 片段数
+    # Token 预算检查：超限时先裁剪 context 再按 token 截断历史
+    if count_tokens(messages) > RAG_TOKEN_BUDGET:
+        logger.info(f"[RAG] token budget exceeded, trimming...")
+        # 先尝试减少 context 片段
         trimmed_context = "\n\n---\n\n".join([
             f"[来源: {h['title']}] {h['text'][:500]}"
             for h in hits[:3]
@@ -81,6 +104,8 @@ async def answer_with_rag(question: str, history: List[dict] = None,
         if history:
             messages = [{"role": "system", "content": prompt}] + history
         messages.append({"role": "user", "content": question})
+        # 再用 token 预算裁剪（替代之前的 history[-4:] 硬截断）
+        messages = ensure_token_budget(messages, budget=RAG_TOKEN_BUDGET)
 
     # Step 4: 流式生成
     full_answer = ""
@@ -96,11 +121,23 @@ async def answer_with_rag(question: str, history: List[dict] = None,
 
     logger.info(f"RAG answer complete ({len(full_answer)} chars): {full_answer[:200]}...")
 
-    # Step 5: 溯源引用
+    # Step 5: Token 用量估算（tiktoken，DeepSeek 流式不返回 usage）
+    prompt_tokens = count_tokens(messages)
+    completion_tokens = count_tokens([{"role": "assistant", "content": full_answer}])
+    yield f"data: {json.dumps({'type': 'token_usage', 'content': '', 'data': {'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens, 'total_tokens': prompt_tokens + completion_tokens}}, ensure_ascii=False)}\n\n"
+
+    # Step 6: 溯源引用
     citations = [
         {"title": h["title"], "heading": h.get("heading", ""), "page": h.get("source_page", 0),
          "chunk": h["text"][:200] + "..."}
         for h in hits[:5]
     ]
     yield f"data: {json.dumps({'type': 'citation', 'content': '', 'data': citations}, ensure_ascii=False)}\n\n"
+
+    # 慢查询告警
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    SLOW_QUERY_THRESHOLD_MS = int(os.getenv("SLOW_QUERY_THRESHOLD_MS", "5000"))
+    if elapsed_ms > SLOW_QUERY_THRESHOLD_MS:
+        logger.warning(f"SLOW_QUERY | question={question[:100]} | time={elapsed_ms}ms | mode=rag")
+
     yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"

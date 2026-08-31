@@ -18,3 +18,4 @@ class AgentState(TypedDict):
     department: str
     security_level: str
     retrieved_docs: list
+    summary: str  # 累积对话摘要（滚动压缩用）

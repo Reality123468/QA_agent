@@ -112,6 +112,17 @@ public class ChatServiceImpl implements ChatService {
                         case "citation":
                             captureCitation(citationList, event);
                             break;
+                        case "summary":
+                            if (event.getContent() != null) {
+                                conversationRepository.findById(conversationId).ifPresent(c -> {
+                                    c.setSummary(event.getContent());
+                                    conversationRepository.save(c);
+                                });
+                            }
+                            break;
+                        case "token_usage":
+                            captureTokenUsage(auditLog, event);
+                            break;
                         case "thought":
                         case "action":
                         case "observation":
@@ -168,6 +179,18 @@ public class ChatServiceImpl implements ChatService {
         }
     }
 
+    private void captureTokenUsage(AuditLog auditLog, ChatResponse event) {
+        if (event.getData() instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> usage = (Map<String, Object>) event.getData();
+            try {
+                auditLog.setTokenUsage(objectMapper.writeValueAsString(usage));
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to serialize tokenUsage", e);
+            }
+        }
+    }
+
     private void captureCitation(List<Map<String, Object>> list, ChatResponse event) {
         if (event.getData() instanceof List) {
             for (Object item : (List<?>) event.getData()) {
@@ -212,6 +235,10 @@ public class ChatServiceImpl implements ChatService {
             auditLogService.save(auditLog);
             log.info("Audit log updated: responseTime={}ms, answerLen={}, error={}", responseTime, answer.length(),
                     errorMessage != null ? errorMessage.substring(0, Math.min(100, errorMessage.length())) : "none");
+            if (responseTime > 5000) {
+                log.warn("SLOW_QUERY | responseTime={}ms | question='{}' | userId={}",
+                        responseTime, auditLog.getQuestion(), auditLog.getUserId());
+            }
         } catch (Exception e) {
             log.error("Failed to update audit log", e);
         }

@@ -186,15 +186,20 @@ def hybrid_search(
     return result
 
 
-def get_document_chunks(doc_id: int, max_chunks: int = 20) -> List[dict]:
-    """获取指定文档的所有 chunks（按 chunk_index 排序）"""
+def get_document_chunks(doc_id: int, max_chunks: int = 20,
+                       security_level: str = "内部") -> List[dict]:
+    """获取指定文档的所有 chunks（按 chunk_index 排序），支持安全级别过滤"""
     client = get_qdrant_client()
+    must_conditions = [FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+    # 安全级别过滤：内部用户不可查看机密文档
+    if security_level == "内部":
+        must_conditions.append(
+            FieldCondition(key="security_level", match=MatchExcept(**{"except": ["机密"]}))
+        )
     try:
         results = client.scroll(
             collection_name=COLLECTION_NAME,
-            scroll_filter=Filter(
-                must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
-            ),
+            scroll_filter=Filter(must=must_conditions),
             limit=max_chunks,
             with_payload=True,
         )
@@ -212,3 +217,36 @@ def get_document_chunks(doc_id: int, max_chunks: int = 20) -> List[dict]:
     except Exception:
         logger.warning(f"Failed to get chunks for doc_id={doc_id}", exc_info=True)
         return []
+
+
+def get_chunk_by_id(doc_id: int, chunk_index: int, security_level: str = "内部") -> dict | None:
+    """获取文档的单个 chunk（按 chunk_index 精确定位），支持安全级别过滤"""
+    client = get_qdrant_client()
+    must_conditions = [
+        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+        FieldCondition(key="chunk_index", match=MatchValue(value=chunk_index)),
+    ]
+    if security_level == "内部":
+        must_conditions.append(
+            FieldCondition(key="security_level", match=MatchExcept(**{"except": ["机密"]}))
+        )
+    try:
+        results = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=Filter(must=must_conditions),
+            limit=1,
+            with_payload=True,
+        )
+        points = results[0]
+        if not points:
+            return None
+        p = points[0]
+        return {
+            "text": p.payload.get("text", ""),
+            "chunk_index": p.payload.get("chunk_index", 0),
+            "title": p.payload.get("title", ""),
+            "heading": p.payload.get("heading", ""),
+        }
+    except Exception:
+        logger.warning(f"Failed to get chunk doc_id={doc_id} chunk_index={chunk_index}", exc_info=True)
+        return None

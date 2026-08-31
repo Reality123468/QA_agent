@@ -123,7 +123,7 @@ async def chat_sync(messages: list, model: str = "deepseek-v4-pro", temperature:
 
 # ── Token 管理 ────────────────────────────────────────────
 
-TOKEN_BUDGET = 8000   # 输入 token 预算（留足余量给模型输出）
+TOKEN_BUDGET = int(os.getenv("AGENT_TOKEN_BUDGET", "8000"))  # Agent 输入 token 预算
 TOKEN_ENCODING = None  # tiktoken 编码器缓存
 
 
@@ -163,22 +163,28 @@ def count_tokens(messages: list) -> int:
     return total
 
 
-async def summarize_history(messages: list) -> list:
+async def summarize_history(messages: list, existing_summary: str = None) -> list:
     """
-    压缩对话历史：保留最近 3 条消息不变，之前的历史送给 LLM 做摘要。
+    压缩对话历史：保留最近 3 条非系统消息不变，之前的历史送给 LLM 做摘要。
+
+    关键：SystemMessage（含 system prompt）不参与摘要，始终保留在最前面。
+    支持传入已有摘要（existing_summary）做滚动累积压缩。
 
     Returns:
-        [SystemMessage(摘要), ..., 最近3条原文]
+        [SystemMessage(摘要), SystemMessage(如有), ..., 最近3条非系统原文]
     """
-    if len(messages) <= 5:
-        return messages
-
     from langchain_core.messages import SystemMessage
 
-    # 分离：前半段做摘要，后半段保留原文
+    # 分离系统消息（不参与摘要）
+    system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+    conv_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+
+    if len(conv_msgs) <= 5:
+        return messages
+
     keep_count = 3
-    old_part = messages[:-keep_count]
-    recent_part = messages[-keep_count:]
+    old_part = conv_msgs[:-keep_count]
+    recent_part = conv_msgs[-keep_count:]
 
     # 构建摘要 prompt
     old_text_parts = []
@@ -187,6 +193,19 @@ async def summarize_history(messages: list) -> list:
         role = m.type if hasattr(m, "type") else m.get("role", "user")
         old_text_parts.append(f"[{role}]: {str(content)[:500]}")
     old_text = "\n".join(old_text_parts)
+
+    # 如果有已有摘要，合并到 prompt 中（滚动累积）
+    if existing_summary:
+        summary_prompt = (
+            f"之前的对话摘要：{existing_summary}\n\n"
+            "请将以下新对话内容合并到摘要中，输出更新后的完整摘要（不超过500字），"
+            "保留关键事实和用户关注点：\n\n" + old_text
+        )
+    else:
+        summary_prompt = (
+            "请将以下对话历史压缩为一段关键事实摘要（不超过300字），"
+            "只保留用户问题要点和已确认的答案要点，丢弃推理过程细节：\n\n" + old_text
+        )
 
     summary_prompt = (
         "请将以下对话历史压缩为一段关键事实摘要（不超过300字），"
@@ -198,14 +217,15 @@ async def summarize_history(messages: list) -> list:
             messages=[{"role": "user", "content": summary_prompt}],
             model="deepseek-v4-flash",
             temperature=0.0,
-            max_tokens=400,
+            max_tokens=512,
         )
         summary = response.content or ""
         logger.info(f"History summarized: {len(old_part)} msgs -> {len(summary)} chars")
-        return [SystemMessage(content=f"[历史摘要] {summary}")] + list(recent_part)
+        result = [SystemMessage(content=f"[历史摘要] {summary}")] + system_msgs + list(recent_part)
+        return result
     except Exception as e:
         logger.warning(f"History summarization failed: {e}, falling back to truncation")
-        return list(recent_part)
+        return system_msgs + list(recent_part)
 
 
 def ensure_token_budget(messages: list, budget: int = TOKEN_BUDGET) -> list:

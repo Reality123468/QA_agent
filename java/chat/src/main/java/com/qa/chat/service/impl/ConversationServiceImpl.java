@@ -42,7 +42,9 @@ public class ConversationServiceImpl implements ConversationService {
         List<Conversation> conversations = conversationRepository.findByUserIdOrderByUpdatedAtDesc(userId);
         return conversations.stream().map(conv -> {
             List<Message> messages = messageRepository.findByConversationIdOrderByTimestampAsc(conv.getId());
-            return new ConversationDto(conv.getId(), conv.getTitle(), conv.getUpdatedAt(), messages.size());
+            ConversationDto dto = new ConversationDto(conv.getId(), conv.getTitle(), conv.getUpdatedAt(), messages.size());
+            dto.setSummary(conv.getSummary());
+            return dto;
         }).collect(Collectors.toList());
     }
 

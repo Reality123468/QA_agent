@@ -14,7 +14,6 @@ LangGraph Agent 图定义。
 import logging
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from agent.state import AgentState
 from agent.nodes import agent_node, tools_node
@@ -54,9 +53,11 @@ def build_agent_graph() -> StateGraph:
     # tools 之后回到 agent
     workflow.add_edge("tools", "agent")
 
-    # 编译（带内存 checkpointer 支持多轮对话）
-    memory = MemorySaver()
-    compiled = workflow.compile(checkpointer=memory)
+    # 编译（无 checkpointer）
+    # 单次请求内 agent_node ⇄ tools_node 的状态流转由 LangGraph 运行时维护；
+    # 跨轮对话上下文由前端每轮发送的全量 history 提供，无需服务端持久化。
+    # 若将来需多实例共享 / 服务端托管历史，可换 RedisSaver 并恢复 thread_id 路由。
+    compiled = workflow.compile()
 
     logger.info("Agent graph compiled successfully")
     return compiled

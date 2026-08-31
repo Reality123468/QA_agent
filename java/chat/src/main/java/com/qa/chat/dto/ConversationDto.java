@@ -8,6 +8,7 @@ public class ConversationDto {
     private String title;
     private LocalDateTime updatedAt;
     private int messageCount;
+    private String summary;
 
     public ConversationDto() {}
 
@@ -26,4 +27,6 @@ public class ConversationDto {
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
     public int getMessageCount() { return messageCount; }
     public void setMessageCount(int messageCount) { this.messageCount = messageCount; }
+    public String getSummary() { return summary; }
+    public void setSummary(String summary) { this.summary = summary; }
 }

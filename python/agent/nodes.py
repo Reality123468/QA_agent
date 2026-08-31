@@ -11,10 +11,14 @@ import json
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessage, ToolMessage, SystemMessage
+from langchain_core.messages import AIMessage, ToolMessage, SystemMessage, HumanMessage
+
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from agent.state import AgentState
 from agent.tools import ALL_TOOLS
+from agent.context import current_security_level
+from common.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from llm.deepseek_client import chat_sync, count_tokens, summarize_history, ensure_token_budget, TOKEN_BUDGET
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,12 @@ AGENT_SYSTEM_PROMPT = """你是一名企业智能助手，拥有以下工具可�
 - 如果用户问题涉及权限外内容，礼貌拒绝
 - 回答简洁、专业、准确"""
 
+# 安全前缀映射 — 注入到 Agent 用户消息中，约束 LLM 不泄露越权内容
+SECURITY_PREFIX_MAP = {
+    "内部": "[安全级别：内部。禁止在回答中泄露任何标记为「机密」的文档内容。]",
+    "机密": "[安全级别：机密。你可以引用所有级别的文档。]",
+}
+
 # 将 LangChain tools 转为 OpenAI 兼容格式
 TOOLS_OPENAI_FORMAT = [
     {
@@ -60,6 +70,30 @@ TOOLS_OPENAI_FORMAT = [
 # tool name → tool 映射
 TOOL_BY_NAME = {t.name: t for t in ALL_TOOLS}
 
+# per-tool 熔断器（独立计数）
+TOOL_CIRCUITS = {
+    "search_knowledge": CircuitBreaker("search_knowledge"),
+    "search_employee": CircuitBreaker("search_employee"),
+    "get_doc_detail": CircuitBreaker("get_doc_detail"),
+}
+
+# 可重试的异常类型
+RETRYABLE_EXCEPTIONS = (asyncio.TimeoutError, ConnectionError, TimeoutError, OSError)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+    reraise=True,
+)
+async def _execute_with_retry(tool_fn, tool_args):
+    """带重试的工具执行（tenacity 指数退避：1s → 2s → 4s，最多 3 次）"""
+    return await asyncio.wait_for(
+        asyncio.to_thread(tool_fn.invoke, tool_args),
+        timeout=TOOL_EXEC_TIMEOUT,
+    )
+
 
 async def agent_node(state: AgentState) -> dict[str, Any]:
     """Agent 决策节点：调用 LLM 判断下一步动作（调用工具 或 直接回答）"""
@@ -75,8 +109,9 @@ async def agent_node(state: AgentState) -> dict[str, Any]:
         logger.info(f"[AgentNode] token budget exceeded ({token_count} > {TOKEN_BUDGET}), summarizing history...")
         SystemMessage_cls = SystemMessage
         try:
+            existing_summary = state.get("summary", "")
             messages = await asyncio.wait_for(
-                summarize_history(messages),
+                summarize_history(messages, existing_summary=existing_summary if existing_summary else None),
                 timeout=30,
             )
         except (asyncio.TimeoutError, Exception) as e:
@@ -86,11 +121,24 @@ async def agent_node(state: AgentState) -> dict[str, Any]:
         messages = [SystemMessage_cls(content=AGENT_SYSTEM_PROMPT)] + list(messages)
         messages = ensure_token_budget(messages)
 
-    logger.info(f"[AgentNode] invoking LLM with {len(messages)} messages (~{count_tokens(messages)} tokens)...")
+    # ── 安全前缀注入 ──
+    # 构建临时 messages 副本，在最后一条 HumanMessage 前注入安全前缀。
+    # 绝不 mutate state["messages"]——agent_node 在 ReAct 循环中可能被多次调用，
+    # 直接修改原始消息会导致前缀累积。
+    seclevel = current_security_level.get()
+    security_prefix = SECURITY_PREFIX_MAP.get(seclevel, SECURITY_PREFIX_MAP["内部"])
+    temp_messages = list(messages)  # 浅拷贝
+    for i in range(len(temp_messages) - 1, -1, -1):
+        if isinstance(temp_messages[i], HumanMessage):
+            original = temp_messages[i]
+            temp_messages[i] = HumanMessage(content=f"{security_prefix}\n\n用户问题：{original.content}")
+            break
+
+    logger.info(f"[AgentNode] invoking LLM with {len(temp_messages)} messages (~{count_tokens(temp_messages)} tokens)...")
     try:
         response = await asyncio.wait_for(
             chat_sync(
-                messages=messages,
+                messages=temp_messages,
                 model="deepseek-v4-pro",
                 temperature=0.3,
                 max_tokens=1024,
@@ -143,20 +191,28 @@ async def tools_node(state: AgentState) -> dict[str, Any]:
 
         tool_fn = TOOL_BY_NAME.get(tool_name)
         if tool_fn:
+            breaker = TOOL_CIRCUITS.get(tool_name)
             try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(tool_fn.invoke, tool_args),
-                    timeout=TOOL_EXEC_TIMEOUT,
-                )
+                if breaker:
+                    result = await breaker.acall(_execute_with_retry, tool_fn, tool_args)
+                else:
+                    result = await _execute_with_retry(tool_fn, tool_args)
                 tool_messages.append(ToolMessage(
                     content=str(result),
                     tool_call_id=tool_call_id,
                     name=tool_name,
                 ))
-            except asyncio.TimeoutError:
-                logger.error(f"[ToolsNode] {tool_name} timed out after {TOOL_EXEC_TIMEOUT}s")
+            except CircuitBreakerOpenError:
+                logger.warning(f"[ToolsNode] {tool_name} blocked by circuit breaker")
                 tool_messages.append(ToolMessage(
-                    content=f"工具 {tool_name} 执行超时，请稍后重试。",
+                    content=f"工具 {tool_name} 暂时不可用（服务已熔断），请简化问题或更换查询方式。",
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ))
+            except asyncio.TimeoutError:
+                logger.error(f"[ToolsNode] {tool_name} timed out after retries")
+                tool_messages.append(ToolMessage(
+                    content=f"工具 {tool_name} 多次执行超时，请稍后重试。",
                     tool_call_id=tool_call_id,
                     name=tool_name,
                 ))

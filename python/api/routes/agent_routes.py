@@ -1,4 +1,5 @@
 import json
+import os
 import asyncio
 import time
 import logging
@@ -12,9 +13,11 @@ from api.schemas.chat import ChatRequest
 from api.schemas.index import IndexRequest
 from rag.indexer import index_document, delete_document_chunks
 from rag.retriever import hybrid_search
+from rag.query_rewriter import should_rewrite, rewrite_query
 from llm.rag_chain import answer_with_rag
 from agent.graph import get_agent_graph
 from agent.state import AgentState
+from agent.context import current_security_level
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -74,7 +77,7 @@ async def chat_stream_route(
     elif mode == "agent":
         return StreamingResponse(
             _agent_stream(request.question, history, x_user_department, security_level,
-                          x_conversation_id or None),
+                          x_conversation_id or None, request.summary),
             media_type="text/event-stream",
         )
     else:
@@ -105,7 +108,7 @@ async def _search_only_stream(question: str, department: str, security_level: st
 
 
 async def _agent_stream(question: str, history: list, department: str, security_level: str,
-                      conversation_id: str = None):
+                      conversation_id: str = None, summary: str = None):
     """Agent 模式：ReAct 推理循环 + 流式输出（含 3 级自动降级）
 
     降级链路：
@@ -113,6 +116,15 @@ async def _agent_stream(question: str, history: list, department: str, security_
     2. RAG 检索失败 → search-only 模式
     3. 全部失败 → 兜底回复
     """
+    # ── 上下文丢失防护 ──
+    # 持续会话（conversation_id 存在）却收到空 history，说明前端很可能未正确发送
+    # 全量历史；本轮将退化为"无跨轮上下文"，记录 WARN 以便排查前端 bug。
+    if conversation_id and not history:
+        logger.warning(
+            f"[_agent_stream] conversation_id={conversation_id} 收到空 history —— "
+            f"前端可能未发送全量历史，本轮将丢失跨轮上下文。"
+        )
+
     agent_failed = False
     from langchain_core.messages import AIMessage as LCAIMessage
 
@@ -128,11 +140,17 @@ async def _agent_stream(question: str, history: list, department: str, security_
             elif h["role"] == "assistant":
                 history_messages.append(LCAIMessage(content=h["content"]))
 
+        # 查询改写：把省略追问补全为独立检索语句
+        search_question = question
+        if should_rewrite(question):
+            search_question = await rewrite_query(question, history)
+
         initial_state: AgentState = {
-            "messages": history_messages + [HumanMessage(content=question)],
+            "messages": history_messages + [HumanMessage(content=search_question)],
             "department": department,
             "security_level": security_level,
             "retrieved_docs": [],
+            "summary": summary or "",
         }
 
         thread_id = f"agent-{conversation_id}" if conversation_id else f"agent-{hash(question)}"
@@ -142,6 +160,9 @@ async def _agent_stream(question: str, history: list, department: str, security_
         }
 
         yield f"data: {json.dumps({'type': 'thought', 'content': '正在分析问题...'}, ensure_ascii=False)}\n\n"
+
+        # 设置当前请求的安全级别上下文（tools 通过 contextvar 读取）
+        current_security_level.set(security_level)
 
         start_time = time.time()
         final_answer = ""
@@ -179,6 +200,22 @@ async def _agent_stream(question: str, history: list, department: str, security_
         if not agent_failed and final_answer:
             for char in final_answer:
                 yield f"data: {json.dumps({'type': 'answer', 'content': char}, ensure_ascii=False)}\n\n"
+            # Token 用量估算
+            from llm.deepseek_client import count_tokens as _count_tokens
+            prompt_tokens = _count_tokens(msgs)
+            completion_tokens = _count_tokens([{"role": "assistant", "content": final_answer}])
+            yield f"data: {json.dumps({'type': 'token_usage', 'content': '', 'data': {'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens, 'total_tokens': prompt_tokens + completion_tokens}}, ensure_ascii=False)}\n\n"
+            # 提取滚动摘要（来自 summarize_history 生成的 SystemMessage）
+            for m in msgs:
+                if hasattr(m, "content") and isinstance(m.content, str) and m.content.startswith("[历史摘要]"):
+                    new_summary = m.content.replace("[历史摘要] ", "", 1)
+                    yield f"data: {json.dumps({'type': 'summary', 'content': new_summary}, ensure_ascii=False)}\n\n"
+                    break
+            # 慢查询告警
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            SLOW_QUERY_THRESHOLD_MS = int(os.getenv("SLOW_QUERY_THRESHOLD_MS", "5000"))
+            if elapsed_ms > SLOW_QUERY_THRESHOLD_MS:
+                logger.warning(f"SLOW_QUERY | question={question[:100]} | time={elapsed_ms}ms | mode=agent")
             yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
             return
 
